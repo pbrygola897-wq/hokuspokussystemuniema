@@ -1,0 +1,5 @@
+@echo off
+title DOOMSDAY PROTOCOL - SYSTEM INTEGRITY CRITICAL
+mode con cols=100 lines=50
+:: Uruchomienie PowerShell jako Administrator, aby mieć prawo do usuwania plików systemowych
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0DoomsdayGamer.ps1" -Force
