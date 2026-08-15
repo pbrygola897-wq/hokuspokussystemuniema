@@ -1,712 +1,522 @@
-@echo off
-setlocal EnableExtensions EnableDelayedExpansion
-title DOOMSDAY GAMER INTERFACE v6.0
-color 0A
+#requires -Version 5.1
+#requires -RunAsAdministrator
 
-rem ============================================================
-rem DOOMSDAY GAMER INTERFACE
-rem WERSJA 1.0 - SILNIK GRY
-rem ============================================================
+# ---------------------------------------------------------
+# 1. WYKRYWANIE DYSKU SYSTEMOWEGO I KONFIGURACJA
+# ---------------------------------------------------------
+$WindowsDrive = (Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Root -like "*Windows*" }).Root.Substring(0, 2)
+$SystemRoot = "$WindowsDrive\Windows"
+$System32 = "$SystemRoot\System32"
+$SysWOW64 = "$SystemRoot\SysWOW64"
 
-rem ------------------------------------------------------------
-rem KONFIGURACJA
-rem ------------------------------------------------------------
+# ---------------------------------------------------------
+# 2. FUNKCJA USUWANIA Z UPRAWNIENIAMI (Takeown + Icacls)
+# ---------------------------------------------------------
+function Remove-SystemFileWithPrivilege {
+    param([string]$FilePath)
+    if (-not (Test-Path $FilePath)) { return "Not Found" }
+    try {
+        # Przejmij własność i uprawnienia
+        Invoke-Expression "takeown.exe /F '$FilePath' /A" | Out-Null
+        Invoke-Expression "icacls.exe '$FilePath' /grant `"$([Security.Principal.WindowsIdentity]::GetCurrent().Name)`":F" | Out-Null
+        
+        # Usuń
+        Remove-Item $FilePath -Force -ErrorAction Stop
+        return "Success"
+    } catch {
+        return "In Use/Denied: $_"
+    }
+}
 
-set /a ROUND=0
-set /a INTEGRITY=100
-set /a COMPONENTS=30
+# ---------------------------------------------------------
+# 3. STAN GRY
+# ---------------------------------------------------------
+$GameState = @{
+    "Integrity" = 100
+    "FilesRemoved" = 0
+    "Level" = 1
+    "Score" = 0
+    "Streak" = 0
+    "GamesPlayed" = 0
+    "Timeouts" = 0
+    "History" = New-Object System.Collections.ArrayList
+    "CrisisMode" = $false
+    "SystemFilesList" = @()
+    "CurrentGame" = $null
+}
 
-set /a WINS=0
-set /a LOSSES=0
-set /a TIMEOUTS=0
-set /a WINSTREAK=0
-set /a LOSESTREAK=0
-set /a TOTAL_RESPONSE=0
-set /a RESPONSES=0
+# ---------------------------------------------------------
+# 4. LOGIKA SKANOWANIA
+# ---------------------------------------------------------
+function Get-SystemTargets {
+    $scanPaths = @($System32, $SysWOW64, "$SystemRoot\Boot")
+    $targets = @()
+    foreach ($path in $scanPaths) {
+        if (Test-Path $path) {
+            try {
+                $files = Get-ChildItem -Path $path -Recurse -File -Force -ErrorAction SilentlyContinue | 
+                         Where-Object { $_.Extension -match '\.(sys|dll|exe|drv|scr|cpl|inf)$' }
+                foreach ($f in $files) {
+                    $targets += @{ Name = $f.FullName; Desc = $f.Name; Crit = if ($f.DirectoryName -like "*drivers*") { 2 } else { 1 } }
+                }
+            } catch {}
+        }
+    }
+    return $targets
+}
 
-set "LAST_GAME=0"
+$GameState["SystemFilesList"] = Get-SystemTargets
 
-rem ------------------------------------------------------------
-rem SANDBOX
-rem TYLKO TEN KATALOG JEST UŻYWANY JAKO "SYSTEM"
-rem ------------------------------------------------------------
+# ---------------------------------------------------------
+# 5. FUNKCJE POMOCNICZE
+# ---------------------------------------------------------
+function Log-History {
+    param([string]$Message, [string]$Type = "INFO")
+    $entry = "[$(Get-Date -Format 'HH:mm:ss')] [$Type] $Message"
+    $null = $GameState["History"].Add($entry)
+    $Form.Invoke([Action]{
+        if ($txtLog.Lines.Count -gt 50) { $txtLog.Text = ($GameState["History"] | Select-Object -Last 50) -join "`n" }
+        else { $txtLog.AppendText("$entry`n") }
+    })
+}
 
-set "ROOT=%~dp0DoomsdaySystem"
+function Show-Glitch {
+    param([int]$Duration = 500)
+    $Form.Invoke([Action]{
+        $oldBG = $Form.BackColor; $Form.BackColor = [System.Drawing.Color]::Black
+        $Form.Controls | ForEach-Object { $_.Visible = $false }
+        $lblGlitch = New-Object System.Windows.Forms.Label
+        $lblGlitch.Text = "ERR_0x$(Get-Random -Min 1000 -Max 9999)"
+        $lblGlitch.ForeColor = [System.Drawing.Color]::Red
+        $lblGlitch.Font = New-Object System.Drawing.Font("Consolas", 16, [System.Drawing.FontStyle]::Bold)
+        $lblGlitch.Location = New-Object System.Drawing.Point(100, 100)
+        $Form.Controls.Add($lblGlitch)
+        Start-Sleep -Milliseconds $Duration
+        $Form.Controls.Remove($lblGlitch)
+        $Form.Controls | ForEach-Object { $_.Visible = $true }
+        $Form.BackColor = $oldBG; $Form.Refresh()
+    })
+}
 
-if not exist "%ROOT%" mkdir "%ROOT%" >nul 2>&1
+function Play-SoundEffect {
+    try { [System.Media.SoundPlayer]::new("C:\Windows\Media\chord.wav").Play() | Out-Null } catch {}
+}
 
-rem Utworzenie testowych komponentów
-for /L %%N in (1,1,30) do (
-    if not exist "%ROOT%\COMPONENT_%%N.sys" (
-        echo DOOMSDAY TEST COMPONENT %%N>"%ROOT%\COMPONENT_%%N.sys"
-    )
+function Remove-SystemFile {
+    param([string]$FilePath)
+    if ($null -eq $FilePath -and $GameState["SystemFilesList"].Count -gt 0) {
+        $index = Get-Random -Minimum 0 -Maximum $GameState["SystemFilesList"].Count
+        $fileObj = $GameState["SystemFilesList"][$index]; $FilePath = $fileObj.Name
+    }
+    if ($null -ne $FilePath) {
+        Log-History "Próba usunięcia: $FilePath" "DELETE"
+        $result = Remove-SystemFileWithPrivilege -FilePath $FilePath
+        if ($result -eq "Success") {
+            Log-History "Fizyczne usunięto: $FilePath" "SUCCESS"
+            $GameState["FilesRemoved"]++; $GameState["Integrity"] = [Math]::Max(0, $GameState["Integrity"] - 1)
+            $GameState["SystemFilesList"] = $GameState["SystemFilesList"] | Where-Object { $_.Name -ne $FilePath }
+        } else {
+            Log-History "Plik w użyciu: $FilePath" "WARN"
+            $GameState["Integrity"] = [Math]::Max(0, $GameState["Integrity"] - 0.5)
+        }
+    }
+}
+
+function Apply-Punishment {
+    $penaltyLevel = [Math]::Min(5, [Math]::Ceiling($GameState["Streak"] / 2))
+    for ($i = 0; $i -lt $penaltyLevel; $i++) { Remove-SystemFile }
+    if ($GameState["Integrity"] -le 0) { Trigger-Crisis }
+}
+
+function Trigger-Crisis {
+    $GameState["CrisisMode"] = $true
+    $Form.Invoke([Action]{
+        $Form.BackColor = [System.Drawing.Color]::DarkRed
+        $lblStatus.Text = "KRIZA SYSTEMU!"
+        $lblStatus.ForeColor = [System.Drawing.Color]::Yellow
+    })
+    Show-Glitch 1000; Log-History "SYSTEM NA KRAWĘDZI" "CRISIS"
+}
+
+function Update-UI {
+    $Form.Invoke([Action]{
+        $lblIntegrity.Text = "INTEGRITY: $($GameState['Integrity'])%"
+        $lblScore.Text = "SCORE: $($GameState['Score'])"
+        $lblStreak.Text = "STREAK: $($GameState['Streak'])"
+        $lblFiles.Text = "FILES LOST: $($GameState['FilesRemoved'])"
+        $lblLevel.Text = "LEVEL: $($GameState['Level'])"
+        if ($GameState["Integrity"] -lt 30) { $Form.BackColor = [System.Drawing.Color]::Maroon }
+        elseif ($GameState["Integrity"] -lt 60) { $Form.BackColor = [System.Drawing.Color]::DarkRed }
+        else { $Form.BackColor = [System.Drawing.Color]::Black }
+    })
+}
+
+# ---------------------------------------------------------
+# 6. GŁÓWNA LOGIKA GRY
+# ---------------------------------------------------------
+
+function Start-Minigame {
+    param([string]$Title, [string]$Description, [int]$TimeLimit, [scriptblock]$GameLogic)
+    $Form.Invoke([Action]{
+        $Form.Controls.Clear()
+        $Form.Text = "DOOMSDAY :: $Title"
+        $lblTimer.Text = "$TimeLimit"
+        $lblTimer.ForeColor = [System.Drawing.Color]::Red
+        $lblDesc = New-Object System.Windows.Forms.Label
+        $lblDesc.Text = $Description
+        $lblDesc.ForeColor = [System.Drawing.Color]::Gray
+        $lblDesc.Location = New-Object System.Drawing.Point(20, 80)
+        $lblDesc.Size = New-Object System.Drawing.Size(500, 100)
+        $Form.Controls.Add($lblDesc)
+    })
+    $result = & $GameLogic
+    $Form.Invoke([Action]{
+        $Form.Controls.Clear()
+        $Build-MainMenu
+    })
+}
+
+# --- GRY ---
+$Mini1 = { # Click Bug
+    param([int]$Time)
+    $score = 0
+    $btn = New-Object System.Windows.Forms.Button
+    $btn.Text = "KLIKNIJ"; $btn.Size = New-Object System.Drawing.Size(150, 50)
+    $btn.Location = New-Object System.Drawing.Point(150, 150)
+    $btn.Font = New-Object System.Drawing.Font("Consolas", 14, [System.Drawing.FontStyle]::Bold)
+    $lblScore = New-Object System.Windows.Forms.Label
+    $lblScore.Text = "Klikaj!"; $lblScore.Location = New-Object System.Drawing.Point(200, 220)
+    $Form.Invoke([Action]{ $Form.Controls.Add($btn); $Form.Controls.Add($lblScore) })
+    $btn.Add_Click({
+        $script:score++; $script:lblScore.Text = "Błędy: $script:score"
+        $btn.Location = New-Object System.Drawing.Point((Get-Random -Min 50 -Max 350), (Get-Random -Min 100 -Max 300))
+        Play-SoundEffect
+    })
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    while ($sw.Elapsed.TotalSeconds -lt $Time) {
+        $Form.Invoke([Action]{ $lblTimer.Text = [math]::Ceiling($Time - $sw.Elapsed.TotalSeconds) })
+        Start-Sleep -Milliseconds 100
+    }
+    $btn.Dispose(); $lblScore.Dispose(); return $score -ge 10
+}
+
+$Mini2 = { # Typing
+    param([int]$Time)
+    $word = "SYSTEM"; $txtInput = New-Object System.Windows.Forms.TextBox
+    $txtInput.Location = New-Object System.Drawing.Point(150, 150)
+    $lblTarget = New-Object System.Windows.Forms.Label
+    $lblTarget.Text = "Wpisz: $word"; $lblTarget.Location = New-Object System.Drawing.Point(150, 100)
+    $Form.Invoke([Action]{ $Form.Controls.Add($txtInput); $Form.Controls.Add($lblTarget) })
+    $txtInput.Add_KeyDown({ if ($_.KeyCode -eq "Enter") { $script:res = ($txtInput.Text -eq $word) } })
+    $txtInput.Focus()
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    while ($sw.Elapsed.TotalSeconds -lt $Time) {
+        $Form.Invoke([Action]{ $lblTimer.Text = [math]::Ceiling($Time - $sw.Elapsed.TotalSeconds) })
+        Start-Sleep -Milliseconds 100
+        if ($script:res -ne $null) { break }
+    }
+    $txtInput.Dispose(); $lblTarget.Dispose(); return $script:res -eq $true
+}
+
+$Mini3 = { # Memory
+    param([int]$Time)
+    $seq = 0..3 | ForEach-Object { Get-Random -Min 0 -Max 4 }
+    $btns = @()
+    for ($i=0; $i -lt 4; $i++) {
+        $b = New-Object System.Windows.Forms.Button
+        $b.Size = New-Object System.Drawing.Size(50, 50); $b.Location = New-Object System.Drawing.Point(100 + ($i * 60), 150)
+        $b.BackColor = [System.Drawing.Color]::Gray; $btns += $b; $Form.Invoke([Action]{ $Form.Controls.Add($b) })
+    }
+    foreach ($idx in $seq) {
+        $btns[$idx].BackColor = [System.Drawing.Color]::Yellow; Start-Sleep -Milliseconds 500
+        $btns[$idx].BackColor = [System.Drawing.Color]::Gray; Start-Sleep -Milliseconds 200
+    }
+    $userInput = @()
+    $btns | ForEach-Object {
+        $_.Add_Click({ $script:idx = $btns.IndexOf($_); $_.BackColor = [System.Drawing.Color]::Green; Start-Sleep -Milliseconds 200; $_.BackColor = [System.Drawing.Color]::Gray; $script:userInput += $script:idx })
+    }
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    while ($sw.Elapsed.TotalSeconds -lt $Time -and $userInput.Count -lt 4) {
+        $Form.Invoke([Action]{ $lblTimer.Text = [math]::Ceiling($Time - $sw.Elapsed.TotalSeconds) })
+        Start-Sleep -Milliseconds 100
+    }
+    $btns | ForEach-Object { $_.Dispose() }; return ($userInput -join ",") -eq ($seq -join ",")
+}
+
+$Mini4 = { # Math
+    param([int]$Time)
+    $a = Get-Random -Min 1 -Max 10; $b = Get-Random -Min 1 -Max 10; $op = @("+","-") | Get-Random
+    $ans = Invoke-Expression "$a $op $b"
+    $lblQ = New-Object System.Windows.Forms.Label; $lblQ.Text = "$a $op $b ="; $lblQ.Location = New-Object System.Drawing.Point(200, 150)
+    $txtA = New-Object System.Windows.Forms.TextBox; $txtA.Location = New-Object System.Drawing.Point(200, 190)
+    $txtA.Add_KeyDown({ if ($_.KeyCode -eq "Enter") { $script:res = ($txtA.Text -eq $ans.ToString()) } })
+    $Form.Invoke([Action]{ $Form.Controls.Add($lblQ); $Form.Controls.Add($txtA) })
+    $txtA.Focus()
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    while ($sw.Elapsed.TotalSeconds -lt $Time) {
+        $Form.Invoke([Action]{ $lblTimer.Text = [math]::Ceiling($Time - $sw.Elapsed.TotalSeconds) })
+        Start-Sleep -Milliseconds 100
+        if ($script:res -ne $null) { break }
+    }
+    $lblQ.Dispose(); $txtA.Dispose(); return $script:res -eq $true
+}
+
+$Mini5 = { # Reaction
+    param([int]$Time)
+    $btn = New-Object System.Windows.Forms.Button; $btn.Text = "CZEKAJ..."; $btn.Size = New-Object System.Drawing.Size(200, 100)
+    $btn.Location = New-Object System.Drawing.Point(150, 150); $btn.BackColor = [System.Drawing.Color]::Red
+    $Form.Invoke([Action]{ $Form.Controls.Add($btn) })
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    Start-Sleep -Milliseconds (Get-Random -Min 1000 -Max 3000)
+    $btn.Text = "KLIKNIJ!"; $btn.BackColor = [System.Drawing.Color]::Green
+    $startTime = [System.Diagnostics.Stopwatch]::StartNew()
+    $btn.Add_Click({
+        $endTime = [System.Diagnostics.Stopwatch]::StartNew()
+        $script:res = ($endTime.ElapsedMilliseconds -lt 800)
+    })
+    while ($sw.Elapsed.TotalSeconds -lt $Time) {
+        $Form.Invoke([Action]{ $lblTimer.Text = [math]::Ceiling($Time - $sw.Elapsed.TotalSeconds) })
+        Start-Sleep -Milliseconds 100
+        if ($script:res -ne $null) { break }
+    }
+    $btn.Dispose(); return $script:res -eq $true
+}
+
+$Mini6 = { # Color Match
+    param([int]$Time)
+    $colors = @{ "Red" = [System.Drawing.Color]::Red; "Blue" = [System.Drawing.Color]::Blue }
+    $cName = $colors.Keys | Get-Random; $cVal = $colors.Values | Get-Random
+    $lblText = New-Object System.Windows.Forms.Label; $lblText.Text = $cName; $lblText.ForeColor = $cVal
+    $lblText.Font = New-Object System.Drawing.Font("Arial", 20, [System.Drawing.FontStyle]::Bold)
+    $lblText.Location = New-Object System.Drawing.Point(150, 100)
+    $btnTrue = New-Object System.Windows.Forms.Button; $btnTrue.Text = "TAK"; $btnTrue.Location = New-Object System.Drawing.Point(100, 200)
+    $btnFalse = New-Object System.Windows.Forms.Button; $btnFalse.Text = "NIE"; $btnFalse.Location = New-Object System.Drawing.Point(250, 200)
+    $Form.Invoke([Action]{ $Form.Controls.Add($lblText); $Form.Controls.Add($btnTrue); $Form.Controls.Add($btnFalse) })
+    $btnTrue.Add_Click({ $script:res = $true }); $btnFalse.Add_Click({ $script:res = $false })
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    while ($sw.Elapsed.TotalSeconds -lt $Time) {
+        $Form.Invoke([Action]{ $lblTimer.Text = [math]::Ceiling($Time - $sw.Elapsed.TotalSeconds) })
+        Start-Sleep -Milliseconds 100
+        if ($script:res -ne $null) { break }
+    }
+    $lblText.Dispose(); $btnTrue.Dispose(); $btnFalse.Dispose(); return $script:res -eq ($cName -eq $cVal.ToString().Split("(")[0].Trim())
+}
+
+$Mini7 = { # Sequence
+    param([int]$Time)
+    $txt = New-Object System.Windows.Forms.TextBox; $txt.Location = New-Object System.Drawing.Point(150, 150); $txt.Size = New-Object System.Drawing.Size(200, 30)
+    $lbl = New-Object System.Windows.Forms.Label; $lbl.Text = "1, 2, 4, 8, 16, ?"; $lbl.Location = New-Object System.Drawing.Point(100, 100)
+    $Form.Invoke([Action]{ $Form.Controls.Add($txt); $Form.Controls.Add($lbl) })
+    $txt.Focus(); $txt.Add_KeyDown({ if ($_.KeyCode -eq "Enter") { $script:res = ($txt.Text -eq "32") } })
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    while ($sw.Elapsed.TotalSeconds -lt $Time) {
+        $Form.Invoke([Action]{ $lblTimer.Text = [math]::Ceiling($Time - $sw.Elapsed.TotalSeconds) })
+        Start-Sleep -Milliseconds 100
+        if ($script:res -ne $null) { break }
+    }
+    $txt.Dispose(); $lbl.Dispose(); return $script:res -eq $true
+}
+
+$Mini8 = { # Find Difference
+    param([int]$Time)
+    $correctIndex = Get-Random -Minimum 0 -Maximum 9
+    $btns = @(); $gridX = 100; $gridY = 100
+    for ($i=0; $i -lt 9; $i++) {
+        $b = New-Object System.Windows.Forms.Button; $b.Text = "O"
+        $b.Location = New-Object System.Drawing.Point($gridX + ($i % 3) * 50, $gridY + [Math]::Floor($i / 3) * 50)
+        $b.Size = New-Object System.Drawing.Size(40, 40)
+        if ($i -eq $correctIndex) { $b.Text = "X"; $b.BackColor = [System.Drawing.Color]::Yellow }
+        $btns += $b; $Form.Invoke([Action]{ $Form.Controls.Add($b) })
+    }
+    $btns[$correctIndex].Add_Click({ $script:res = $true })
+    $btns | Where-Object { $_ -ne $btns[$correctIndex] } | ForEach-Object { $_.Add_Click({ $script:res = $false }) }
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    while ($sw.Elapsed.TotalSeconds -lt $Time) {
+        $Form.Invoke([Action]{ $lblTimer.Text = [math]::Ceiling($Time - $sw.Elapsed.TotalSeconds) })
+        Start-Sleep -Milliseconds 100
+        if ($script:res -ne $null) { break }
+    }
+    $btns | ForEach-Object { $_.Dispose() }; return $script:res -eq $true
+}
+
+$Mini9 = { # Sort
+    param([int]$Time)
+    $nums = 1..5 | Get-Random -Count 3 | Sort-Object { Get-Random }
+    $txt = New-Object System.Windows.Forms.TextBox; $txt.Location = New-Object System.Drawing.Point(150, 150); $txt.Size = New-Object System.Drawing.Size(200, 30)
+    $lbl = New-Object System.Windows.Forms.Label; $lbl.Text = "Sort: $($nums -join ',')"; $lbl.Location = New-Object System.Drawing.Point(100, 100)
+    $Form.Invoke([Action]{ $Form.Controls.Add($txt); $Form.Controls.Add($lbl) })
+    $txt.Focus(); $txt.Add-KeyDown({ if ($_.KeyCode -eq "Enter") { $script:res = ($txt.Text -split ',' | Sort-Object) -join ',' -eq ($nums | Sort-Object) -join ',' } })
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    while ($sw.Elapsed.TotalSeconds -lt $Time) {
+        $Form.Invoke([Action]{ $lblTimer.Text = [math]::Ceiling($Time - $sw.Elapsed.TotalSeconds) })
+        Start-Sleep -Milliseconds 100
+        if ($script:res -ne $null) { break }
+    }
+    $txt.Dispose(); $lbl.Dispose(); return $script:res -eq $true
+}
+
+$Mini10 = { # Hex
+    param([int]$Time)
+    $word = "WIN"
+    $hex = [System.Text.Encoding]::ASCII.GetBytes($word) | ForEach-Object { $_.ToString("X2") } -join " "
+    $txt = New-Object System.Windows.Forms.TextBox; $txt.Location = New-Object System.Drawing.Point(150, 150); $txt.Size = New-Object System.Drawing.Size(200, 30)
+    $lbl = New-Object System.Windows.Forms.Label; $lbl.Text = "Hex: $hex"; $lbl.Location = New-Object System.Drawing.Point(100, 100)
+    $Form.Invoke([Action]{ $Form.Controls.Add($txt); $Form.Controls.Add($lbl) })
+    $txt.Focus(); $txt.Add_KeyDown({ if ($_.KeyCode -eq "Enter") { $script:res = ($txt.Text.ToUpper() -eq $word) } })
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    while ($sw.Elapsed.TotalSeconds -lt $Time) {
+        $Form.Invoke([Action]{ $lblTimer.Text = [math]::Ceiling($Time - $sw.Elapsed.TotalSeconds) })
+        Start-Sleep -Milliseconds 100
+        if ($script:res -ne $null) { break }
+    }
+    $txt.Dispose(); $lbl.Dispose(); return $script:res -eq $true
+}
+
+$MiniGames = @(
+    @{ Name = "Click Purge"; Script = $Mini1; Time = 15 },
+    @{ Name = "Type Kill"; Script = $Mini2; Time = 12 },
+    @{ Name = "Memory Leak"; Script = $Mini3; Time = 20 },
+    @{ Name = "Math Overflow"; Script = $Mini4; Time = 10 },
+    @{ Name = "Reflex Driver"; Script = $Mini5; Time = 8 },
+    @{ Name = "Color Glitch"; Script = $Mini6; Time = 15 },
+    @{ Name = "Sequence Error"; Script = $Mini7; Time = 12 },
+    @{ Name = "Find Bug"; Script = $Mini8; Time = 10 },
+    @{ Name = "Sort Data"; Script = $Mini9; Time = 15 },
+    @{ Name = "Hex Decrypt"; Script = $Mini10; Time = 12 }
 )
 
-rem ------------------------------------------------------------
-rem EKRAN STARTOWY
-rem ------------------------------------------------------------
-
-:BOOT
-
-cls
-echo.
-echo ============================================================
-echo.
-echo              DOOMSDAY GAMER INTERFACE
-echo.
-echo                    VERSION 6.0
-echo.
-echo ============================================================
-echo.
-echo                 INITIALIZING SYSTEM...
-timeout /t 2 /nobreak >nul
-
-cls
-echo.
-echo [BOOT] Loading game engine...
-timeout /t 1 /nobreak >nul
-
-echo [BOOT] Checking system components...
-timeout /t 1 /nobreak >nul
-
-echo [BOOT] Initializing player profile...
-timeout /t 1 /nobreak >nul
-
-echo [BOOT] Initializing challenge generator...
-timeout /t 1 /nobreak >nul
-
-echo [BOOT] System ready.
-timeout /t 1 /nobreak >nul
-
-cls
-echo.
-echo ============================================================
-echo                    WARNING
-echo ============================================================
-echo.
-echo This game modifies files inside:
-echo.
-echo %ROOT%
-echo.
-echo This directory is the game's TEST SYSTEM.
-echo.
-echo Your performance determines how quickly it deteriorates.
-echo.
-echo ============================================================
-echo.
-pause
-
-goto GAME_LOOP
-
-
-rem ============================================================
-rem GLOWNA PETLA
-rem ============================================================
-
-:GAME_LOOP
-
-set /a ROUND+=1
-
-call :UPDATE_SYSTEM
-call :RANDOM_EVENT
-call :CALCULATE_TIMER
-call :CHOOSE_GAME
-call :RUN_GAME
-
-if "!WINNER!"=="YES" (
-    call :WIN
-    goto GAME_LOOP
-)
-
-call :LOSE
-
-if !COMPONENTS! LEQ 0 goto SYSTEM_FAILURE
-
-goto GAME_LOOP
-
-
-rem ============================================================
-rem SYSTEM STATUS
-rem ============================================================
-
-:UPDATE_SYSTEM
-
-set /a INTEGRITY=COMPONENTS*100/30
-
-if !INTEGRITY! GTR 80 (
-    set "THREAT=NORMAL"
-) else if !INTEGRITY! GTR 60 (
-    set "THREAT=WARNING"
-) else if !INTEGRITY! GTR 40 (
-    set "THREAT=ELEVATED"
-) else if !INTEGRITY! GTR 20 (
-    set "THREAT=CRITICAL"
-) else (
-    set "THREAT=EXTREME"
-)
-
-exit /b
-
-
-rem ============================================================
-rem TIMER
-rem ============================================================
-
-:CALCULATE_TIMER
-
-if !INTEGRITY! GEQ 80 (
-    set /a TIMER=60
-) else if !INTEGRITY! GEQ 60 (
-    set /a TIMER=45
-) else if !INTEGRITY! GEQ 40 (
-    set /a TIMER=30
-) else if !INTEGRITY! GEQ 20 (
-    set /a TIMER=20
-) else if !INTEGRITY! GEQ 10 (
-    set /a TIMER=15
-) else (
-    set /a TIMER=10
-)
-
-exit /b
-
-
-rem ============================================================
-rem LOSOWANIE GRY
-rem ============================================================
-
-:CHOOSE_GAME
-
-:RETRY_GAME
-
-set /a GAME_ID=!RANDOM! %% 10 + 1
-
-rem Nie losuj tej samej gry dwa razy z rzedu
-if !GAME_ID! EQU !LAST_GAME! goto RETRY_GAME
-
-set /a LAST_GAME=GAME_ID
-
-exit /b
-
-
-rem ============================================================
-rem WYSWIETLENIE SYSTEM STATUS
-rem ============================================================
-
-:STATUS
-
-echo.
-echo ============================================================
-echo SYSTEM STATUS
-echo ============================================================
-echo ROUND:              !ROUND!
-echo INTEGRITY:          !INTEGRITY!%%
-echo COMPONENTS:        !COMPONENTS!
-echo THREAT LEVEL:       !THREAT!
-echo TIME LIMIT:         !TIMER!s
-echo.
-echo WINS:               !WINS!
-echo LOSSES:             !LOSSES!
-echo WIN STREAK:         !WINSTREAK!
-echo LOSE STREAK:        !LOSESTREAK!
-echo TIMEOUTS:           !TIMEOUTS!
-echo ============================================================
-echo.
-
-exit /b
-
-
-rem ============================================================
-rem LOSOWE ZDARZENIA
-rem ============================================================
-
-:RANDOM_EVENT
-
-set /a EVENT=!RANDOM! %% 12
-
-if !EVENT! LEQ 7 exit /b
-
-cls
-
-if !EVENT! EQU 8 (
-    echo.
-    echo ============================================================
-    echo                     RECOVERY EVENT
-    echo ============================================================
-    echo.
-    echo A damaged component has been restored.
-    echo.
-    if !COMPONENTS! LSS 30 set /a COMPONENTS+=1
-    timeout /t 2 /nobreak >nul
-    exit /b
-)
-
-if !EVENT! EQU 9 (
-    echo.
-    echo ============================================================
-    echo                     SYSTEM WARNING
-    echo ============================================================
-    echo.
-    echo An unexpected process has failed.
-    echo.
-    if !COMPONENTS! GTR 1 set /a COMPONENTS-=1
-    timeout /t 2 /nobreak >nul
-    exit /b
-)
-
-if !EVENT! EQU 10 (
-    echo.
-    echo ============================================================
-    echo                     TIME ANOMALY
-    echo ============================================================
-    echo.
-    echo The system clock is unstable.
-    echo.
-    if !TIMER! GTR 15 set /a TIMER-=5
-    timeout /t 2 /nobreak >nul
-    exit /b
-)
-
-if !EVENT! EQU 11 (
-    echo.
-    echo ============================================================
-    echo                   PROCESS INTERRUPTION
-    echo ============================================================
-    echo.
-    echo Challenge generation interrupted.
-    echo.
-    timeout /t 2 /nobreak >nul
-    exit /b
-)
-
-exit /b
-
-
-rem ============================================================
-rem URUCHOMIENIE AKTUALNEJ GRY
-rem ============================================================
-
-:RUN_GAME
-
-set "WINNER=NO"
-
-cls
-call :STATUS
-
-echo.
-echo ============================================================
-echo                    CHALLENGE !ROUND!
-echo ============================================================
-echo.
-
-if !GAME_ID! EQU 1 call :GAME_1
-if !GAME_ID! EQU 2 call :GAME_2
-if !GAME_ID! EQU 3 call :GAME_3
-if !GAME_ID! EQU 4 call :GAME_4
-if !GAME_ID! EQU 5 call :GAME_5
-if !GAME_ID! EQU 6 call :GAME_6
-if !GAME_ID! EQU 7 call :GAME_7
-if !GAME_ID! EQU 8 call :GAME_8
-if !GAME_ID! EQU 9 call :GAME_9
-if !GAME_ID! EQU 10 call :GAME_10
-
-exit /b
-
-
-rem ============================================================
-rem GAME 1 - ZGADNIJ LICZBE
-rem ============================================================
-
-:GAME_1
-
-set /a NUMBER=!RANDOM! %% 10 + 1
-
-echo GAME: GUESS THE NUMBER
-echo.
-echo Guess a number from 1 to 10.
-echo.
-
-set /p "ANSWER=Answer: "
-
-if "!ANSWER!"=="!NUMBER!" (
-    set "WINNER=YES"
-)
-
-exit /b
-
-
-rem ============================================================
-rem GAME 2 - PARZYSTA / NIEPARZYSTA
-rem ============================================================
-
-:GAME_2
-
-set /a NUMBER=!RANDOM! %% 100 + 1
-
-echo GAME: EVEN OR ODD
-echo.
-echo Is !NUMBER! even or odd?
-echo.
-
-set /p "ANSWER=Answer (EVEN/ODD): "
-
-set /a MOD=NUMBER %% 2
-
-if !MOD! EQU 0 (
-    if /I "!ANSWER!"=="EVEN" set "WINNER=YES"
-) else (
-    if /I "!ANSWER!"=="ODD" set "WINNER=YES"
-)
-
-exit /b
-
-
-rem ============================================================
-rem GAME 3 - DZIELENIE
-rem ============================================================
-
-:GAME_3
-
-set /a DIVISOR=!RANDOM! %% 12 + 2
-set /a NUMBER=!RANDOM! %% 200 + 20
-
-echo GAME: DIVISION
-echo.
-echo !NUMBER! / !DIVISOR!
-echo.
-echo Enter result with decimal precision if necessary.
-echo.
-
-set /p "ANSWER=Answer: "
-
-powershell -NoProfile -Command ^
-"$x=[double]'!NUMBER!' / [double]'!DIVISOR!; if ([math]::Abs($x-[double]'!ANSWER!') -lt 0.0001) { exit 0 } else { exit 1 }"
-
-if !ERRORLEVEL! EQU 0 set "WINNER=YES"
-
-exit /b
-
-
-rem ============================================================
-rem GAME 4 - SZYBKIE DODAWANIE
-rem ============================================================
-
-:GAME_4
-
-set /a A=!RANDOM! %% 200 + 1
-set /a B=!RANDOM! %% 200 + 1
-
-echo GAME: QUICK MATH
-echo.
-echo !A! + !B! = ?
-echo.
-
-set /p "ANSWER=Answer: "
-
-set /a CORRECT=A+B
-
-if "!ANSWER!"=="!CORRECT!" set "WINNER=YES"
-
-exit /b
-
-
-rem ============================================================
-rem GAME 5 - MNOZENIE
-rem ============================================================
-
-:GAME_5
-
-set /a A=!RANDOM! %% 20 + 2
-set /a B=!RANDOM! %% 20 + 2
-
-echo GAME: MULTIPLICATION
-echo.
-echo !A! x !B! = ?
-echo.
-
-set /p "ANSWER=Answer: "
-
-set /a CORRECT=A*B
-
-if "!ANSWER!"=="!CORRECT!" set "WINNER=YES"
-
-exit /b
-
-
-rem ============================================================
-rem GAME 6 - PIERWSZA CZY NIE
-rem ============================================================
-
-:GAME_6
-
-set /a NUMBER=!RANDOM! %% 100 + 2
-
-echo GAME: PRIME CHECK
-echo.
-echo Is !NUMBER! a prime number?
-echo.
-
-set /p "ANSWER=Answer (YES/NO): "
-
-powershell -NoProfile -Command ^
-"$n=!NUMBER!; $prime=$true; if($n -lt 2){$prime=$false}; for($i=2;$i*$i -le $n;$i++){if($n %% $i -eq 0){$prime=$false;break}}; if(($prime -and '!ANSWER!'.ToUpper() -eq 'YES') -or (!$prime -and '!ANSWER!'.ToUpper() -eq 'NO')){exit 0}else{exit 1}"
-
-if !ERRORLEVEL! EQU 0 set "WINNER=YES"
-
-exit /b
-
-
-rem ============================================================
-rem GAME 7 - SEKWENCJA
-rem ============================================================
-
-:GAME_7
-
-set /a A=!RANDOM! %% 9 + 1
-set /a B=!RANDOM! %% 9 + 1
-set /a C=!RANDOM! %% 9 + 1
-
-echo GAME: MEMORY SEQUENCE
-echo.
-echo Remember:
-echo.
-echo !A! - !B! - !C!
-timeout /t 2 /nobreak >nul
-
-cls
-echo.
-echo What was the sequence?
-echo.
-
-set /p "ANSWER=Answer: "
-
-if "!ANSWER!"=="!A!-!B!-!C!" set "WINNER=YES"
-
-exit /b
-
-
-rem ============================================================
-rem GAME 8 - WIEKSZE MNOZENIE
-rem ============================================================
-
-:GAME_8
-
-set /a A=!RANDOM! %% 50 + 10
-set /a B=!RANDOM! %% 50 + 10
-
-echo GAME: ADVANCED MULTIPLICATION
-echo.
-echo !A! x !B! = ?
-echo.
-
-set /p "ANSWER=Answer: "
-
-set /a CORRECT=A*B
-
-if "!ANSWER!"=="!CORRECT!" set "WINNER=YES"
-
-exit /b
-
-
-rem ============================================================
-rem GAME 9 - PALINDROM
-rem ============================================================
-
-:GAME_9
-
-set /a TYPE=!RANDOM! %% 3
-
-if !TYPE! EQU 0 set "WORD=LEVEL"
-if !TYPE! EQU 1 set "WORD=RADAR"
-if !TYPE! EQU 2 set "WORD=COMPUTER"
-
-echo GAME: PALINDROME
-echo.
-echo Is "!WORD!" a palindrome?
-echo.
-
-set /p "ANSWER=Answer (YES/NO): "
-
-if /I "!WORD!"=="LEVEL" (
-    if /I "!ANSWER!"=="YES" set "WINNER=YES"
-)
-
-if /I "!WORD!"=="RADAR" (
-    if /I "!ANSWER!"=="YES" set "WINNER=YES"
-)
-
-if /I "!WORD!"=="COMPUTER" (
-    if /I "!ANSWER!"=="NO" set "WINNER=YES"
-)
-
-exit /b
-
-
-rem ============================================================
-rem GAME 10 - LOGIKA
-rem ============================================================
-
-:GAME_10
-
-set /a A=!RANDOM! %% 10 + 1
-set /a B=!RANDOM! %% 10 + 1
-
-echo GAME: LOGIC
-echo.
-echo If A = !A! and B = !B!
-echo.
-echo What is A + B?
-echo.
-
-set /p "ANSWER=Answer: "
-
-set /a CORRECT=A+B
-
-if "!ANSWER!"=="!CORRECT!" set "WINNER=YES"
-
-exit /b
-
-
-rem ============================================================
-rem WYGRANA
-rem ============================================================
-
-:WIN
-
-set /a WINS+=1
-set /a WINSTREAK+=1
-set /a LOSESTREAK=0
-
-echo.
-echo ============================================================
-echo                        SUCCESS
-echo ============================================================
-echo.
-echo Challenge completed.
-echo System damage avoided.
-echo.
-
-timeout /t 2 /nobreak >nul
-
-exit /b
-
-
-rem ============================================================
-rem PRZEGRANA
-rem ============================================================
-
-:LOSE
-
-set /a LOSSES+=1
-set /a LOSESTREAK+=1
-set /a WINSTREAK=0
-
-rem ------------------------------------------------------------
-rem DYNAMICZNA KARA
-rem ------------------------------------------------------------
-
-if !WINSTREAK! GEQ 3 (
-    set /a DAMAGE=1
-) else if !LOSESTREAK! GEQ 5 (
-    set /a DAMAGE=5
-) else if !LOSESTREAK! GEQ 3 (
-    set /a DAMAGE=4
-) else if !LOSESTREAK! GEQ 2 (
-    set /a DAMAGE=3
-) else (
-    set /a DAMAGE=2
-)
-
-if !DAMAGE! GTR !COMPONENTS! set /a DAMAGE=COMPONENTS
-
-cls
-
-echo.
-echo ============================================================
-echo                    CRITICAL FAILURE
-echo ============================================================
-echo.
-echo Challenge failed.
-echo.
-echo SYSTEM COMPONENT SELECTION REQUIRED.
-echo.
-echo [1] Runtime Compatibility Module
-echo [2] System Configuration Service
-echo [3] Hardware Interface Component
-echo.
-echo Select component: 
-
-choice /c 123 /n >nul
-
-set /a CHOICE=%ERRORLEVEL%
-
-call :REMOVE_COMPONENTS !DAMAGE! !CHOICE!
-
-exit /b
-
-
-rem ============================================================
-rem USUWANIE KOMPONENTOW Z SANDBOXA
-rem ============================================================
-
-:REMOVE_COMPONENTS
-
-set /a DAMAGE=%1
-set /a SELECTED=%2
-
-echo.
-echo Component selection accepted.
-echo.
-echo Processing system damage...
-timeout /t 2 /nobreak >nul
-
-for /L %%N in (1,1,!DAMAGE!) do (
-
-    if !COMPONENTS! LEQ 0 goto REMOVE_DONE
-
-    set /a TARGET=!RANDOM! %% 30 + 1
-
-    if exist "%ROOT%\COMPONENT_!TARGET!.sys" (
-        del /f /q "%ROOT%\COMPONENT_!TARGET!.sys" >nul 2>&1
-        set /a COMPONENTS-=1
-        echo [!] Component !TARGET! removed.
-    ) else (
-        set /a TARGET=!RANDOM! %% 30 + 1
-    )
-)
-
-:REMOVE_DONE
-
-echo.
-echo System integrity updated.
-echo.
-timeout /t 2 /nobreak >nul
-
-exit /b
-
-
-rem ============================================================
-rem SYSTEM FAILURE
-rem ============================================================
-
-:SYSTEM_FAILURE
-
-cls
-echo.
-echo ============================================================
-echo.
-echo                  SYSTEM FAILURE
-echo.
-echo ============================================================
-echo.
-echo CRITICAL COMPONENTS ARE MISSING.
-echo.
-echo SYSTEM INTEGRITY: 0%%
-echo.
-echo GAME OVER
-echo.
-echo ============================================================
-echo.
-
-pause
-exit /b
+function Run-GameLoop {
+    $swGame = [System.Diagnostics.Stopwatch]::StartNew()
+    while ($GameState["Integrity"] -gt 0) {
+        $gameIndex = Get-Random -Minimum 0 -Maximum $MiniGames.Count
+        $currentMini = $MiniGames[$gameIndex]
+        $timeForLevel = [Math]::Max(5, 70 - ($GameState["Level"] * 6))
+        $eventRoll = Get-Random -Minimum 1 -Maximum 100
+        $eventMsg = if ($eventRoll -le 10) { "ALERT: CPU Spike!" } elseif ($eventRoll -le 20) { "INFO: +5s Time" } else { "" }
+        Log-History "Runda $($GameState['GamesPlayed']+1): $currentMini.Name" "ROUND"
+        $success = Start-Minigame -Title $currentMini.Name -Description $eventMsg -TimeLimit $timeForLevel -GameLogic $currentMini.Script
+        $GameState["GamesPlayed"]++; $GameState["TotalTime"] += $timeForLevel
+        if ($success) {
+            $GameState["Streak"]++; $GameState["Score"] += 100 * $GameState["Level"]
+            Log-History "WYGRANA! Streak: $($GameState['Streak'])" "WIN"
+            $Form.Invoke([Action]{ $Form.BackColor = [System.Drawing.Color]::Black; $lblStatus.ForeColor = [System.Drawing.Color]::Lime })
+        } else {
+            $GameState["Streak"] = 0; $GameState["Timeouts"]++
+            Log-History "PRZEGRANA! Usuwanie plików..." "LOSS"
+            Apply-Punishment; Show-Glitch 200
+        }
+        if ($GameState["GamesPlayed"] % 3 -eq 0) {
+            $GameState["Level"]++; Log-History "LEVEL UP: $($GameState['Level'])" "LEVELUP"
+            Show-Glitch 1000; if ($GameState["Level"] -gt 10) { $GameState["Level"] = 10 }
+        }
+        Update-UI
+    }
+}
+
+# ---------------------------------------------------------
+# 7. UI GŁÓWNE
+# ---------------------------------------------------------
+
+$Form = New-Object System.Windows.Forms.Form
+$Form.Text = "DOOMSDAY GAMER"; $Form.Size = New-Object System.Drawing.Size(800, 600)
+$Form.StartPosition = "CenterScreen"; $Form.FormBorderStyle = "FixedSingle"
+$Form.MaximizeBox = $false; $Form.BackColor = [System.Drawing.Color]::Black
+$Form.ForeColor = [System.Drawing.Color]::Lime; $Form.Font = New-Object System.Drawing.Font("Consolas", 10)
+
+$lblTitle = New-Object System.Windows.Forms.Label
+$lblTitle.Text = "DOOMSDAY PROTOCOL"; $lblTitle.Font = New-Object System.Drawing.Font("Consolas", 24, [System.Drawing.FontStyle]::Bold)
+$lblTitle.Location = New-Object System.Drawing.Point(200, 20); $Form.Controls.Add($lblTitle)
+
+$lblIntegrity = New-Object System.Windows.Forms.Label; $lblIntegrity.Text = "INTEGRITY: 100%"
+$lblIntegrity.Location = New-Object System.Drawing.Point(20, 60); $Form.Controls.Add($lblIntegrity)
+
+$lblScore = New-Object System.Windows.Forms.Label; $lblScore.Text = "SCORE: 0"
+$lblScore.Location = New-Object System.Drawing.Point(20, 80); $Form.Controls.Add($lblScore)
+
+$lblStreak = New-Object System.Windows.Forms.Label; $lblStreak.Text = "STREAK: 0"
+$lblStreak.Location = New-Object System.Drawing.Point(20, 100); $Form.Controls.Add($lblStreak)
+
+$lblFiles = New-Object System.Windows.Forms.Label; $lblFiles.Text = "FILES LOST: 0"
+$lblFiles.Location = New-Object System.Drawing.Point(20, 120); $Form.Controls.Add($lblFiles)
+
+$lblLevel = New-Object System.Windows.Forms.Label; $lblLevel.Text = "LEVEL: 1"
+$lblLevel.Location = New-Object System.Drawing.Point(600, 60); $Form.Controls.Add($lblLevel)
+
+$lblStatus = New-Object System.Windows.Forms.Label; $lblStatus.Text = "STATUS: ONLINE"
+$lblStatus.Location = New-Object System.Drawing.Point(300, 60); $Form.Controls.Add($lblStatus)
+
+$lblTimer = New-Object System.Windows.Forms.Label
+$lblTimer.Text = "60"; $lblTimer.Font = New-Object System.Drawing.Font("Consolas", 40, [System.Drawing.FontStyle]::Bold)
+$lblTimer.Location = New-Object System.Drawing.Point(350, 150); $lblTimer.Visible = $false
+$Form.Controls.Add($lblTimer)
+
+$txtLog = New-Object System.Windows.Forms.TextBox
+$txtLog.Location = New-Object System.Drawing.Point(20, 250); $txtLog.Size = New-Object System.Drawing.Size(740, 300)
+$txtLog.ReadOnly = $true; $txtLog.Multiline = $true; $txtLog.ScrollBars = "Vertical"
+$txtLog.Font = New-Object System.Drawing.Font("Consolas", 8); $Form.Controls.Add($txtLog)
+
+$btnStart = New-Object System.Windows.Forms.Button
+$btnStart.Text = "URUCHOM PROCES USUWANIA"; $btnStart.Location = New-Object System.Drawing.Point(250, 200)
+$btnStart.Size = New-Object System.Drawing.Size(250, 50)
+$btnStart.Font = New-Object System.Drawing.Font("Consolas", 12, [System.Drawing.FontStyle]::Bold)
+$btnStart.BackColor = [System.Drawing.Color]::DarkRed; $btnStart.ForeColor = [System.Drawing.Color]::White
+$Form.Controls.Add($btnStart)
+
+function Build-MainMenu {
+    $Form.Controls.Clear()
+    $lblTitle = New-Object System.Windows.Forms.Label
+    $lblTitle.Text = "DOOMSDAY PROTOCOL"; $lblTitle.Font = New-Object System.Drawing.Font("Consolas", 24, [System.Drawing.FontStyle]::Bold)
+    $lblTitle.Location = New-Object System.Drawing.Point(200, 20); $Form.Controls.Add($lblTitle)
+
+    $lblIntegrity = New-Object System.Windows.Forms.Label
+    $lblIntegrity.Text = "INTEGRITY: $($GameState['Integrity'])%"
+    $lblIntegrity.Location = New-Object System.Drawing.Point(20, 60); $Form.Controls.Add($lblIntegrity)
+
+    $lblScore = New-Object System.Windows.Forms.Label
+    $lblScore.Text = "SCORE: $($GameState['Score'])"
+    $lblScore.Location = New-Object System.Drawing.Point(20, 80); $Form.Controls.Add($lblScore)
+
+    $btnStart = New-Object System.Windows.Forms.Button
+    $btnStart.Text = "URUCHOM PROCES USUWANIA"; $btnStart.Location = New-Object System.Drawing.Point(250, 200)
+    $btnStart.Size = New-Object System.Drawing.Size(250, 50)
+    $btnStart.Add_Click({ Run-BootSequence }); $Form.Controls.Add($btnStart)
+
+    $txtLog = New-Object System.Windows.Forms.TextBox
+    $txtLog.Location = New-Object System.Drawing.Point(20, 250); $txtLog.Size = New-Object System.Drawing.Size(740, 300)
+    $txtLog.ReadOnly = $true; $txtLog.Multiline = $true
+    $txtLog.Text = ($GameState["History"] | Select-Object -Last 50) -join "`n"
+    $txtLog.ScrollBars = "Vertical"; $txtLog.Font = New-Object System.Drawing.Font("Consolas", 8)
+    $Form.Controls.Add($txtLog)
+}
+
+function Run-BootSequence {
+    $Form.BackColor = [System.Drawing.Color]::Black; $Form.Text = "BOOTING..."
+    $Form.Controls.Clear()
+    $txtBoot = New-Object System.Windows.Forms.TextBox
+    $txtBoot.Multiline = $true; $txtBoot.ReadOnly = $true
+    $txtBoot.BackColor = [System.Drawing.Color]::Black; $txtBoot.ForeColor = [System.Drawing.Color]::Lime
+    $txtBoot.Size = New-Object System.Drawing.Size(800, 600); $txtBoot.Location = New-Object System.Drawing.Point(0, 0)
+    $txtBoot.Text = "Initializing DOOMSDAY kernel..."
+    $Form.Controls.Add($txtBoot)
+    Start-Sleep -Milliseconds 2000
+    $txtBoot.Dispose(); $Form.Controls.Clear()
+    Run-GameLoop; Show-GameOver
+}
+
+function Show-GameOver {
+    $Form.Controls.Clear(); $Form.BackColor = [System.Drawing.Color]::DarkRed
+    $Form.Text = "SYSTEM FAILURE"
+    $lblEnd = New-Object System.Windows.Forms.Label
+    $lblEnd.Text = "SYSTEM FAILURE`nIntegrity: $($GameState['Integrity'])%`nFiles Removed: $($GameState['FilesRemoved'])"
+    $lblEnd.ForeColor = [System.Drawing.Color]::Yellow
+    $lblEnd.Font = New-Object System.Drawing.Font("Consolas", 20, [System.Drawing.FontStyle]::Bold)
+    $lblEnd.Location = New-Object System.Drawing.Point(150, 200); $Form.Controls.Add($lblEnd)
+    $btnExit = New-Object System.Windows.Forms.Button
+    $btnExit.Text = "ZAMKNIJ SYSTEM"; $btnExit.Add_Click({ $Form.Close() })
+    $Form.Controls.Add($btnExit)
+}
+
+Log-History "System zainicjowany. Ścieżka: $SystemRoot" "BOOT"
+Build-MainMenu
+$Form.TopMost = $true
+$Form.ShowDialog()
