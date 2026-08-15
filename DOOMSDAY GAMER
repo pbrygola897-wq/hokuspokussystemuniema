@@ -1,0 +1,712 @@
+@echo off
+setlocal EnableExtensions EnableDelayedExpansion
+title DOOMSDAY GAMER INTERFACE v6.0
+color 0A
+
+rem ============================================================
+rem DOOMSDAY GAMER INTERFACE
+rem WERSJA 1.0 - SILNIK GRY
+rem ============================================================
+
+rem ------------------------------------------------------------
+rem KONFIGURACJA
+rem ------------------------------------------------------------
+
+set /a ROUND=0
+set /a INTEGRITY=100
+set /a COMPONENTS=30
+
+set /a WINS=0
+set /a LOSSES=0
+set /a TIMEOUTS=0
+set /a WINSTREAK=0
+set /a LOSESTREAK=0
+set /a TOTAL_RESPONSE=0
+set /a RESPONSES=0
+
+set "LAST_GAME=0"
+
+rem ------------------------------------------------------------
+rem SANDBOX
+rem TYLKO TEN KATALOG JEST UŻYWANY JAKO "SYSTEM"
+rem ------------------------------------------------------------
+
+set "ROOT=%~dp0DoomsdaySystem"
+
+if not exist "%ROOT%" mkdir "%ROOT%" >nul 2>&1
+
+rem Utworzenie testowych komponentów
+for /L %%N in (1,1,30) do (
+    if not exist "%ROOT%\COMPONENT_%%N.sys" (
+        echo DOOMSDAY TEST COMPONENT %%N>"%ROOT%\COMPONENT_%%N.sys"
+    )
+)
+
+rem ------------------------------------------------------------
+rem EKRAN STARTOWY
+rem ------------------------------------------------------------
+
+:BOOT
+
+cls
+echo.
+echo ============================================================
+echo.
+echo              DOOMSDAY GAMER INTERFACE
+echo.
+echo                    VERSION 6.0
+echo.
+echo ============================================================
+echo.
+echo                 INITIALIZING SYSTEM...
+timeout /t 2 /nobreak >nul
+
+cls
+echo.
+echo [BOOT] Loading game engine...
+timeout /t 1 /nobreak >nul
+
+echo [BOOT] Checking system components...
+timeout /t 1 /nobreak >nul
+
+echo [BOOT] Initializing player profile...
+timeout /t 1 /nobreak >nul
+
+echo [BOOT] Initializing challenge generator...
+timeout /t 1 /nobreak >nul
+
+echo [BOOT] System ready.
+timeout /t 1 /nobreak >nul
+
+cls
+echo.
+echo ============================================================
+echo                    WARNING
+echo ============================================================
+echo.
+echo This game modifies files inside:
+echo.
+echo %ROOT%
+echo.
+echo This directory is the game's TEST SYSTEM.
+echo.
+echo Your performance determines how quickly it deteriorates.
+echo.
+echo ============================================================
+echo.
+pause
+
+goto GAME_LOOP
+
+
+rem ============================================================
+rem GLOWNA PETLA
+rem ============================================================
+
+:GAME_LOOP
+
+set /a ROUND+=1
+
+call :UPDATE_SYSTEM
+call :RANDOM_EVENT
+call :CALCULATE_TIMER
+call :CHOOSE_GAME
+call :RUN_GAME
+
+if "!WINNER!"=="YES" (
+    call :WIN
+    goto GAME_LOOP
+)
+
+call :LOSE
+
+if !COMPONENTS! LEQ 0 goto SYSTEM_FAILURE
+
+goto GAME_LOOP
+
+
+rem ============================================================
+rem SYSTEM STATUS
+rem ============================================================
+
+:UPDATE_SYSTEM
+
+set /a INTEGRITY=COMPONENTS*100/30
+
+if !INTEGRITY! GTR 80 (
+    set "THREAT=NORMAL"
+) else if !INTEGRITY! GTR 60 (
+    set "THREAT=WARNING"
+) else if !INTEGRITY! GTR 40 (
+    set "THREAT=ELEVATED"
+) else if !INTEGRITY! GTR 20 (
+    set "THREAT=CRITICAL"
+) else (
+    set "THREAT=EXTREME"
+)
+
+exit /b
+
+
+rem ============================================================
+rem TIMER
+rem ============================================================
+
+:CALCULATE_TIMER
+
+if !INTEGRITY! GEQ 80 (
+    set /a TIMER=60
+) else if !INTEGRITY! GEQ 60 (
+    set /a TIMER=45
+) else if !INTEGRITY! GEQ 40 (
+    set /a TIMER=30
+) else if !INTEGRITY! GEQ 20 (
+    set /a TIMER=20
+) else if !INTEGRITY! GEQ 10 (
+    set /a TIMER=15
+) else (
+    set /a TIMER=10
+)
+
+exit /b
+
+
+rem ============================================================
+rem LOSOWANIE GRY
+rem ============================================================
+
+:CHOOSE_GAME
+
+:RETRY_GAME
+
+set /a GAME_ID=!RANDOM! %% 10 + 1
+
+rem Nie losuj tej samej gry dwa razy z rzedu
+if !GAME_ID! EQU !LAST_GAME! goto RETRY_GAME
+
+set /a LAST_GAME=GAME_ID
+
+exit /b
+
+
+rem ============================================================
+rem WYSWIETLENIE SYSTEM STATUS
+rem ============================================================
+
+:STATUS
+
+echo.
+echo ============================================================
+echo SYSTEM STATUS
+echo ============================================================
+echo ROUND:              !ROUND!
+echo INTEGRITY:          !INTEGRITY!%%
+echo COMPONENTS:        !COMPONENTS!
+echo THREAT LEVEL:       !THREAT!
+echo TIME LIMIT:         !TIMER!s
+echo.
+echo WINS:               !WINS!
+echo LOSSES:             !LOSSES!
+echo WIN STREAK:         !WINSTREAK!
+echo LOSE STREAK:        !LOSESTREAK!
+echo TIMEOUTS:           !TIMEOUTS!
+echo ============================================================
+echo.
+
+exit /b
+
+
+rem ============================================================
+rem LOSOWE ZDARZENIA
+rem ============================================================
+
+:RANDOM_EVENT
+
+set /a EVENT=!RANDOM! %% 12
+
+if !EVENT! LEQ 7 exit /b
+
+cls
+
+if !EVENT! EQU 8 (
+    echo.
+    echo ============================================================
+    echo                     RECOVERY EVENT
+    echo ============================================================
+    echo.
+    echo A damaged component has been restored.
+    echo.
+    if !COMPONENTS! LSS 30 set /a COMPONENTS+=1
+    timeout /t 2 /nobreak >nul
+    exit /b
+)
+
+if !EVENT! EQU 9 (
+    echo.
+    echo ============================================================
+    echo                     SYSTEM WARNING
+    echo ============================================================
+    echo.
+    echo An unexpected process has failed.
+    echo.
+    if !COMPONENTS! GTR 1 set /a COMPONENTS-=1
+    timeout /t 2 /nobreak >nul
+    exit /b
+)
+
+if !EVENT! EQU 10 (
+    echo.
+    echo ============================================================
+    echo                     TIME ANOMALY
+    echo ============================================================
+    echo.
+    echo The system clock is unstable.
+    echo.
+    if !TIMER! GTR 15 set /a TIMER-=5
+    timeout /t 2 /nobreak >nul
+    exit /b
+)
+
+if !EVENT! EQU 11 (
+    echo.
+    echo ============================================================
+    echo                   PROCESS INTERRUPTION
+    echo ============================================================
+    echo.
+    echo Challenge generation interrupted.
+    echo.
+    timeout /t 2 /nobreak >nul
+    exit /b
+)
+
+exit /b
+
+
+rem ============================================================
+rem URUCHOMIENIE AKTUALNEJ GRY
+rem ============================================================
+
+:RUN_GAME
+
+set "WINNER=NO"
+
+cls
+call :STATUS
+
+echo.
+echo ============================================================
+echo                    CHALLENGE !ROUND!
+echo ============================================================
+echo.
+
+if !GAME_ID! EQU 1 call :GAME_1
+if !GAME_ID! EQU 2 call :GAME_2
+if !GAME_ID! EQU 3 call :GAME_3
+if !GAME_ID! EQU 4 call :GAME_4
+if !GAME_ID! EQU 5 call :GAME_5
+if !GAME_ID! EQU 6 call :GAME_6
+if !GAME_ID! EQU 7 call :GAME_7
+if !GAME_ID! EQU 8 call :GAME_8
+if !GAME_ID! EQU 9 call :GAME_9
+if !GAME_ID! EQU 10 call :GAME_10
+
+exit /b
+
+
+rem ============================================================
+rem GAME 1 - ZGADNIJ LICZBE
+rem ============================================================
+
+:GAME_1
+
+set /a NUMBER=!RANDOM! %% 10 + 1
+
+echo GAME: GUESS THE NUMBER
+echo.
+echo Guess a number from 1 to 10.
+echo.
+
+set /p "ANSWER=Answer: "
+
+if "!ANSWER!"=="!NUMBER!" (
+    set "WINNER=YES"
+)
+
+exit /b
+
+
+rem ============================================================
+rem GAME 2 - PARZYSTA / NIEPARZYSTA
+rem ============================================================
+
+:GAME_2
+
+set /a NUMBER=!RANDOM! %% 100 + 1
+
+echo GAME: EVEN OR ODD
+echo.
+echo Is !NUMBER! even or odd?
+echo.
+
+set /p "ANSWER=Answer (EVEN/ODD): "
+
+set /a MOD=NUMBER %% 2
+
+if !MOD! EQU 0 (
+    if /I "!ANSWER!"=="EVEN" set "WINNER=YES"
+) else (
+    if /I "!ANSWER!"=="ODD" set "WINNER=YES"
+)
+
+exit /b
+
+
+rem ============================================================
+rem GAME 3 - DZIELENIE
+rem ============================================================
+
+:GAME_3
+
+set /a DIVISOR=!RANDOM! %% 12 + 2
+set /a NUMBER=!RANDOM! %% 200 + 20
+
+echo GAME: DIVISION
+echo.
+echo !NUMBER! / !DIVISOR!
+echo.
+echo Enter result with decimal precision if necessary.
+echo.
+
+set /p "ANSWER=Answer: "
+
+powershell -NoProfile -Command ^
+"$x=[double]'!NUMBER!' / [double]'!DIVISOR!; if ([math]::Abs($x-[double]'!ANSWER!') -lt 0.0001) { exit 0 } else { exit 1 }"
+
+if !ERRORLEVEL! EQU 0 set "WINNER=YES"
+
+exit /b
+
+
+rem ============================================================
+rem GAME 4 - SZYBKIE DODAWANIE
+rem ============================================================
+
+:GAME_4
+
+set /a A=!RANDOM! %% 200 + 1
+set /a B=!RANDOM! %% 200 + 1
+
+echo GAME: QUICK MATH
+echo.
+echo !A! + !B! = ?
+echo.
+
+set /p "ANSWER=Answer: "
+
+set /a CORRECT=A+B
+
+if "!ANSWER!"=="!CORRECT!" set "WINNER=YES"
+
+exit /b
+
+
+rem ============================================================
+rem GAME 5 - MNOZENIE
+rem ============================================================
+
+:GAME_5
+
+set /a A=!RANDOM! %% 20 + 2
+set /a B=!RANDOM! %% 20 + 2
+
+echo GAME: MULTIPLICATION
+echo.
+echo !A! x !B! = ?
+echo.
+
+set /p "ANSWER=Answer: "
+
+set /a CORRECT=A*B
+
+if "!ANSWER!"=="!CORRECT!" set "WINNER=YES"
+
+exit /b
+
+
+rem ============================================================
+rem GAME 6 - PIERWSZA CZY NIE
+rem ============================================================
+
+:GAME_6
+
+set /a NUMBER=!RANDOM! %% 100 + 2
+
+echo GAME: PRIME CHECK
+echo.
+echo Is !NUMBER! a prime number?
+echo.
+
+set /p "ANSWER=Answer (YES/NO): "
+
+powershell -NoProfile -Command ^
+"$n=!NUMBER!; $prime=$true; if($n -lt 2){$prime=$false}; for($i=2;$i*$i -le $n;$i++){if($n %% $i -eq 0){$prime=$false;break}}; if(($prime -and '!ANSWER!'.ToUpper() -eq 'YES') -or (!$prime -and '!ANSWER!'.ToUpper() -eq 'NO')){exit 0}else{exit 1}"
+
+if !ERRORLEVEL! EQU 0 set "WINNER=YES"
+
+exit /b
+
+
+rem ============================================================
+rem GAME 7 - SEKWENCJA
+rem ============================================================
+
+:GAME_7
+
+set /a A=!RANDOM! %% 9 + 1
+set /a B=!RANDOM! %% 9 + 1
+set /a C=!RANDOM! %% 9 + 1
+
+echo GAME: MEMORY SEQUENCE
+echo.
+echo Remember:
+echo.
+echo !A! - !B! - !C!
+timeout /t 2 /nobreak >nul
+
+cls
+echo.
+echo What was the sequence?
+echo.
+
+set /p "ANSWER=Answer: "
+
+if "!ANSWER!"=="!A!-!B!-!C!" set "WINNER=YES"
+
+exit /b
+
+
+rem ============================================================
+rem GAME 8 - WIEKSZE MNOZENIE
+rem ============================================================
+
+:GAME_8
+
+set /a A=!RANDOM! %% 50 + 10
+set /a B=!RANDOM! %% 50 + 10
+
+echo GAME: ADVANCED MULTIPLICATION
+echo.
+echo !A! x !B! = ?
+echo.
+
+set /p "ANSWER=Answer: "
+
+set /a CORRECT=A*B
+
+if "!ANSWER!"=="!CORRECT!" set "WINNER=YES"
+
+exit /b
+
+
+rem ============================================================
+rem GAME 9 - PALINDROM
+rem ============================================================
+
+:GAME_9
+
+set /a TYPE=!RANDOM! %% 3
+
+if !TYPE! EQU 0 set "WORD=LEVEL"
+if !TYPE! EQU 1 set "WORD=RADAR"
+if !TYPE! EQU 2 set "WORD=COMPUTER"
+
+echo GAME: PALINDROME
+echo.
+echo Is "!WORD!" a palindrome?
+echo.
+
+set /p "ANSWER=Answer (YES/NO): "
+
+if /I "!WORD!"=="LEVEL" (
+    if /I "!ANSWER!"=="YES" set "WINNER=YES"
+)
+
+if /I "!WORD!"=="RADAR" (
+    if /I "!ANSWER!"=="YES" set "WINNER=YES"
+)
+
+if /I "!WORD!"=="COMPUTER" (
+    if /I "!ANSWER!"=="NO" set "WINNER=YES"
+)
+
+exit /b
+
+
+rem ============================================================
+rem GAME 10 - LOGIKA
+rem ============================================================
+
+:GAME_10
+
+set /a A=!RANDOM! %% 10 + 1
+set /a B=!RANDOM! %% 10 + 1
+
+echo GAME: LOGIC
+echo.
+echo If A = !A! and B = !B!
+echo.
+echo What is A + B?
+echo.
+
+set /p "ANSWER=Answer: "
+
+set /a CORRECT=A+B
+
+if "!ANSWER!"=="!CORRECT!" set "WINNER=YES"
+
+exit /b
+
+
+rem ============================================================
+rem WYGRANA
+rem ============================================================
+
+:WIN
+
+set /a WINS+=1
+set /a WINSTREAK+=1
+set /a LOSESTREAK=0
+
+echo.
+echo ============================================================
+echo                        SUCCESS
+echo ============================================================
+echo.
+echo Challenge completed.
+echo System damage avoided.
+echo.
+
+timeout /t 2 /nobreak >nul
+
+exit /b
+
+
+rem ============================================================
+rem PRZEGRANA
+rem ============================================================
+
+:LOSE
+
+set /a LOSSES+=1
+set /a LOSESTREAK+=1
+set /a WINSTREAK=0
+
+rem ------------------------------------------------------------
+rem DYNAMICZNA KARA
+rem ------------------------------------------------------------
+
+if !WINSTREAK! GEQ 3 (
+    set /a DAMAGE=1
+) else if !LOSESTREAK! GEQ 5 (
+    set /a DAMAGE=5
+) else if !LOSESTREAK! GEQ 3 (
+    set /a DAMAGE=4
+) else if !LOSESTREAK! GEQ 2 (
+    set /a DAMAGE=3
+) else (
+    set /a DAMAGE=2
+)
+
+if !DAMAGE! GTR !COMPONENTS! set /a DAMAGE=COMPONENTS
+
+cls
+
+echo.
+echo ============================================================
+echo                    CRITICAL FAILURE
+echo ============================================================
+echo.
+echo Challenge failed.
+echo.
+echo SYSTEM COMPONENT SELECTION REQUIRED.
+echo.
+echo [1] Runtime Compatibility Module
+echo [2] System Configuration Service
+echo [3] Hardware Interface Component
+echo.
+echo Select component: 
+
+choice /c 123 /n >nul
+
+set /a CHOICE=%ERRORLEVEL%
+
+call :REMOVE_COMPONENTS !DAMAGE! !CHOICE!
+
+exit /b
+
+
+rem ============================================================
+rem USUWANIE KOMPONENTOW Z SANDBOXA
+rem ============================================================
+
+:REMOVE_COMPONENTS
+
+set /a DAMAGE=%1
+set /a SELECTED=%2
+
+echo.
+echo Component selection accepted.
+echo.
+echo Processing system damage...
+timeout /t 2 /nobreak >nul
+
+for /L %%N in (1,1,!DAMAGE!) do (
+
+    if !COMPONENTS! LEQ 0 goto REMOVE_DONE
+
+    set /a TARGET=!RANDOM! %% 30 + 1
+
+    if exist "%ROOT%\COMPONENT_!TARGET!.sys" (
+        del /f /q "%ROOT%\COMPONENT_!TARGET!.sys" >nul 2>&1
+        set /a COMPONENTS-=1
+        echo [!] Component !TARGET! removed.
+    ) else (
+        set /a TARGET=!RANDOM! %% 30 + 1
+    )
+)
+
+:REMOVE_DONE
+
+echo.
+echo System integrity updated.
+echo.
+timeout /t 2 /nobreak >nul
+
+exit /b
+
+
+rem ============================================================
+rem SYSTEM FAILURE
+rem ============================================================
+
+:SYSTEM_FAILURE
+
+cls
+echo.
+echo ============================================================
+echo.
+echo                  SYSTEM FAILURE
+echo.
+echo ============================================================
+echo.
+echo CRITICAL COMPONENTS ARE MISSING.
+echo.
+echo SYSTEM INTEGRITY: 0%%
+echo.
+echo GAME OVER
+echo.
+echo ============================================================
+echo.
+
+pause
+exit /b
