@@ -1,5 +1,35 @@
-@echo off
-title DOOMSDAY PROTOCOL - SYSTEM INTEGRITY CRITICAL
-mode con cols=100 lines=50
-:: Uruchomienie PowerShell jako Administrator, aby mieć prawo do usuwania plików systemowych
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0DoomsdayGamer.ps1" -Force
+@echo OFF
+title SYSTEM PURGE INITIATED
+chcp 65001 >nul
+
+REM 1. PRAWIDŁOWE URUCHOMIENIE SKRYPTU Z BIEŻĄCEGO KATALOGU
+REM %~dp0 to zmienna CMD, która wskazuje na katalog, w którym leży ten plik .bat
+SET "SCRIPT_PATH=%~dp0game.ps1"
+
+REM Sprawdzenie czy plik istnieje
+if not exist "%SCRIPT_PATH%" (
+    echo [ERROR] Nie znaleziono pliku game.ps1 w folderze!
+    echo Ścieżka: "%SCRIPT_PATH%"
+    pause
+    exit /b 1
+)
+
+REM 2. WYMUSZENIE UPRAWNIEŃ ADMINISTRATORA (KLUCZOWE DLA USUWANIA DYSKU)
+net session >nul 2>&1
+if %errorLevel% neq 0 (
+    echo [!] Uruchamiam ponownie jako Administrator...
+    powershell.exe -Command "Start-Process cmd.exe -ArgumentList '/c \"%~dpnx0\" %*' -Verb RunAs"
+    exit
+)
+
+REM 3. URUCHOMIENIE SKRYPTU
+echo [OK] Uruchamiam czyszczenie...
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_PATH%" -Force
+
+IF ERRORLEVEL 1 (
+    echo [!] Skrypt zakończył się błędem.
+) ELSE (
+    echo [SUCCESS] Skrypt wykonany pomyślnie.
+)
+
+pause
