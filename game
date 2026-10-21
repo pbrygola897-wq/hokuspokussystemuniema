@@ -4,6 +4,7 @@ print("uruchamiasz winwiper na własną odpowiedzialność! (może zniszczyć sy
 print("tak/nie")
 p = input("włączyć? ")
 if p == "tak":
-    os.system(r"Remove-Item -Path 'C:\Windows' -Recurse -Force")
+    os.system(r"import os
+os.system('powershell -Command "Write-Host Test działa!"')
 else:
     print("komp ci dziekuje!")
